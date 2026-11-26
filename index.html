@@ -237,6 +237,41 @@ form.plan-form { display: flex; flex-direction: column; min-height: 0; flex: 1; 
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 50% { opacity: .25; } }
 @media (prefers-reduced-motion: reduce) { .spinner, .badge.ai.working::before { animation: none; } }
+
+/* Tabs + Bookmarks */
+.sr-only { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.tabs { display: inline-flex; background: var(--subtle); border-radius: 9px; padding: 3px; gap: 2px; }
+.tabs a { height: 30px; display: inline-flex; align-items: center; padding: 0 12px; border-radius: 7px; color: var(--text-2); font-weight: 500; font-size: 13.5px; text-decoration: none; white-space: nowrap; }
+.tabs a:hover { color: var(--text); }
+.tabs a[aria-current="page"] { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm); }
+@media (max-width: 600px) { .brand-name { display: none; } }
+.bm { display: flex; flex-direction: column; gap: 16px; }
+.bm-add { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.bm-add.over { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.bm-add-row { display: flex; gap: 8px; align-items: center; }
+.bm-add-row .plain-input { flex: 1; }
+.bm-add-row label.btn { cursor: pointer; }
+@media (max-width: 600px) { .bm-add-row { flex-wrap: wrap; } .bm-add-row .plain-input { flex-basis: 100%; } .bm-add-row .btn { flex: 1; } }
+.bm-hint { font-size: 12.5px; color: var(--text-3); }
+.bm-shot { display: flex; align-items: center; gap: 10px; }
+.bm-shot img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
+.bm-toolbar { display: flex; gap: 12px; align-items: center; }
+.bm-toolbar .plain-input { max-width: 360px; }
+.bm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+@media (max-width: 600px) { .bm-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; } }
+.bm-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; box-shadow: var(--shadow-sm); min-width: 0; }
+.bm-media { aspect-ratio: 4 / 5; background: var(--subtle); display: grid; place-items: center; overflow: hidden; color: var(--text-3); font-weight: 600; font-size: 14px; text-decoration: none; position: relative; }
+.bm-media img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.bm-media .site { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px; text-align: center; }
+.bm-media .site b { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; background: var(--surface); color: var(--accent); font-size: 18px; box-shadow: var(--shadow-sm); }
+.bm-media .play { position: absolute; inset: auto auto 8px 8px; background: rgba(0,0,0,.6); color: #fff; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px; }
+.bm-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.bm-meta { display: flex; justify-content: space-between; gap: 6px; align-items: center; font-size: 12px; color: var(--text-3); }
+.bm-note { font-size: 13.5px; overflow-wrap: anywhere; }
+.bm-url { font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bm-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: auto; padding-top: 4px; }
+.bm-actions .btn.danger { margin-left: auto; height: 26px; font-size: 12.5px; }
+.bm-empty { grid-column: 1 / -1; border: 1px dashed var(--border-strong); border-radius: 12px; padding: 28px 16px; text-align: center; color: var(--text-3); }
 </style>
 </head>
 <body>
@@ -249,6 +284,10 @@ form.plan-form { display: flex; flex-direction: column; min-height: 0; flex: 1; 
       <span class="brand-sub">Content planner</span>
     </div>
     <div class="bar-actions hide" id="topActions">
+      <nav class="tabs" aria-label="Sections">
+        <a href="#calendar" id="tabCalendar" aria-current="page">Calendar</a>
+        <a href="#bookmarks" id="tabBookmarks">Bookmarks</a>
+      </nav>
       <a class="btn" href="https://www.midjourney.com/imagine" target="_blank" rel="noopener noreferrer" aria-label="Open Midjourney in a new tab">
         <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M9 3h4v4M13 3 7.5 8.5M12 9.5V13H3V4h3.5"/></svg><span class="mj-label">Midjourney</span>
       </a>
@@ -262,6 +301,7 @@ form.plan-form { display: flex; flex-direction: column; min-height: 0; flex: 1; 
       <div>
         <h2 id="setupTitle">Connect your content repo</h2>
         <p class="quiet" style="margin:4px 0 0">Plans and reference art are saved to the Content-distribution repo on GitHub. Paste a token once; it stays in this browser only.</p>
+        <p class="quiet" style="margin:6px 0 0"><b>Already set up on another device?</b> Each phone or browser asks once. Make another token the same way (you can have several), or paste the one you saved.</p>
       </div>
       <ol>
         <li>On github.com, open Settings → Developer settings → Personal access tokens → <b>Fine-grained tokens</b> → Generate new token.</li>
@@ -297,6 +337,40 @@ form.plan-form { display: flex; flex-direction: column; min-height: 0; flex: 1; 
     <section class="card table-card hide" id="ahead" aria-labelledby="aheadTitle">
       <div class="table-head"><h2 id="aheadTitle">Coming up</h2><span class="quiet" id="aheadHint"></span></div>
       <ul class="ahead-list" id="aheadList"></ul>
+    </section>
+
+    <section class="bm hide" id="bookmarksView" aria-labelledby="bmTitle">
+      <div class="page-head">
+        <div>
+          <h1 id="bmTitle">Bookmarks</h1>
+          <div class="page-sub">Artform videos and posts to remember. Just a shelf: nothing here is sent to Claude.</div>
+        </div>
+      </div>
+
+      <div class="card bm-add" id="bmDrop">
+        <div class="bm-add-row">
+          <label class="sr-only" for="bmUrl">Link</label>
+          <input id="bmUrl" class="plain-input" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste a link (Instagram, YouTube, Pinterest…)">
+          <button type="button" class="btn" id="bmPaste">Paste</button>
+          <label class="btn" for="bmFile">Screenshot</label>
+          <input id="bmFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif" class="sr-only">
+        </div>
+        <div class="bm-shot hide" id="bmShot"></div>
+        <div class="bm-add-row">
+          <label class="sr-only" for="bmNote">Note</label>
+          <input id="bmNote" class="plain-input" type="text" maxlength="300" autocomplete="off" placeholder="Note (optional): what you liked about it">
+          <button type="button" class="btn primary" id="bmSave">Save</button>
+        </div>
+        <div class="bm-hint" id="bmHint">You can also paste or drop a screenshot anywhere on this page.</div>
+        <div class="msg" id="bmMsg" role="status" hidden></div>
+      </div>
+
+      <div class="bm-toolbar">
+        <label class="sr-only" for="bmSearch">Search bookmarks</label>
+        <input id="bmSearch" class="plain-input" type="search" placeholder="Search notes and links">
+        <span class="quiet" id="bmCount"></span>
+      </div>
+      <div class="bm-grid" id="bmList"></div>
     </section>
 
     <footer class="foot hide" id="foot">

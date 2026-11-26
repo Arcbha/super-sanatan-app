@@ -6,6 +6,7 @@ const $ = id => document.getElementById(id);
 const API = 'https://api.github.com';
 const K = { tok: 'ss.token', repo: 'ss.repo', branch: 'ss.branch', share: 'ss.share' };
 const PLANS = 'planner/plans.json', PANCHANG = 'data/panchang_2026.json', REFS = 'planner/refs', REQUESTS = 'planner/requests';
+const BOOKMARKS = 'planner/bookmarks.json', BM_DIR = 'planner/bookmarks';
 const POLL_MS = 7000, AI_SLOW_MS = 4 * 60 * 1000, AI_GIVE_UP_MS = 15 * 60 * 1000;
 const MAX_FILE = 50 * 1024 * 1024, MAX_SIDE = 2000, JPEG_Q = 0.88, MAX_REFS = 16;
 
@@ -189,6 +190,21 @@ async function savePlans(mutate, message, files = [], onProgress) {
   state.plans = result;
   return result;
 }
+function parseList(txt, key, path) {
+  if (!txt) return [];
+  let doc; try { doc = JSON.parse(txt) } catch { throw new Error(`${path} in the repo is not valid JSON. Fix or remove it, then refresh.`) }
+  return (Array.isArray(doc && doc[key]) ? doc[key] : []).filter(x => x && typeof x.id === 'string');
+}
+async function saveBookmarks(mutate, message, files = []) {
+  let result;
+  await commitFiles(files, message, null, async headSha => {
+    result = mutate(parseList(await raw(BOOKMARKS, headSha), 'bookmarks', BOOKMARKS).map(b => ({ ...b })));
+    const body = JSON.stringify({ version: 1, note: 'Written by the Super Sanatan app. Bookmarks only; never sent to Claude. Format: planner/README.md', bookmarks: result }, null, 2) + '\n';
+    return [{ path: BOOKMARKS, b64: b64utf8(body) }];
+  });
+  state.bookmarks = result;
+  return result;
+}
 const blobUrls = new Map();
 function refSrc(path) {
   if (!blobUrls.has(path)) blobUrls.set(path, raw(path, null, true).then(b => b ? URL.createObjectURL(b) : null).catch(() => null));
@@ -212,6 +228,7 @@ async function shrinkImage(file) {                    // big photos → ≤2000 
 const state = {
   today: istToday(), start: istToday(), panchang: null, plans: [], loaded: false,
   editing: null, draft: null, removed: new Set(), saving: false, progress: 0, formError: '', notice: '',
+  view: 'calendar', bookmarks: [], bm: { file: null, preview: null, saving: false },
 };
 const cleanRefs = refs => (Array.isArray(refs) ? refs : []).filter(r => r && ((r.type === 'text' && typeof r.text === 'string' && r.text.trim()) || (['image', 'video', 'pdf'].includes(r.type) && typeof r.path === 'string' && r.path.startsWith(REFS + '/'))));
 const kindLabel = k => (KINDS.find(x => x[0] === k) || [null, 'Item'])[1];
@@ -231,7 +248,8 @@ function aiState(p) {
 async function loadAll(first) {
   msg('appMsg', '', first ? 'Loading from GitHub…' : '');
   try {
-    const [pan, plans] = await Promise.all([state.panchang ? null : raw(PANCHANG), raw(PLANS)]);
+    const [pan, plans, bms] = await Promise.all([state.panchang ? null : raw(PANCHANG), raw(PLANS), raw(BOOKMARKS)]);
+    state.bookmarks = parseList(bms, 'bookmarks', BOOKMARKS);
     if (pan) {
       const p = JSON.parse(pan);
       const festivals = (p.major_festivals || []).filter(e => e && isDate(e.date));
@@ -246,6 +264,7 @@ async function loadAll(first) {
     msg('appMsg', 'err', e.message);
   }
   if (!state.editing) render();
+  if (state.view === 'bookmarks') renderBookmarks();
   takeShared();
   schedulePoll();
 }
@@ -693,23 +712,208 @@ async function cycleStatus(p, btn) {
   history.replaceState(null, '', location.pathname);
 })();
 function takeShared() {
-  if (!state.loaded || state.editing) return;
-  let s; try { s = JSON.parse(store.get(K.share) || 'null') } catch { s = null }
-  if (!s) return;
+  if (!state.loaded) return;
+  let sh; try { sh = JSON.parse(store.get(K.share) || 'null') } catch { sh = null }
+  if (!sh) return;
   store.del(K.share);
-  const link = (s.url || (s.text.match(/https?:\/\/\S+/) || [''])[0]).trim();
-  const note = [s.text && s.text !== link ? s.text.trim() : '', link].filter(Boolean).join('\n');
-  state.start = istToday();
-  openEditor(state.start, null, { title: s.title.slice(0, 140), refs: note ? [{ type: 'text', text: note }] : [] });
-  msg('appMsg', 'ok', 'Shared link added as a reference. Give it a title and save.');
+  const link = cleanUrl(findUrl(sh.url) || findUrl(sh.text) || '');
+  const rest = String(sh.text || '').replace(/https?:\/\/\S+/g, '').trim();
+  const note = [sh.title, rest].filter(Boolean).join(' — ').slice(0, 300);
+  if (state.editing && !state.saving) closeEditor();
+  if (location.hash !== '#bookmarks') location.hash = '#bookmarks'; else applyView();
+  $('bmUrl').value = link; $('bmNote').value = note;
+  bmMsg('ok', 'Shared link ready. Add a note if you like, then tap Save.');
+  $('bmSave').focus({ preventScroll: true });
 }
+
+// ── Bookmarks: a plain shelf of links and screenshots (never sent to Claude) ──
+const SITES = [[/(^|\.)instagram\.com$|(^|\.)instagr\.am$/, 'Instagram'], [/(^|\.)youtube\.com$|(^|\.)youtu\.be$/, 'YouTube'], [/(^|\.)pinterest\.[a-z.]+$|(^|\.)pin\.it$/, 'Pinterest'],
+  [/(^|\.)x\.com$|(^|\.)twitter\.com$/, 'X'], [/(^|\.)facebook\.com$|(^|\.)fb\.watch$/, 'Facebook'], [/(^|\.)tiktok\.com$/, 'TikTok'], [/(^|\.)behance\.net$/, 'Behance'], [/(^|\.)artstation\.com$/, 'ArtStation']];
+function findUrl(text) {
+  const t = String(text || '').trim();
+  const m = t.match(/https?:\/\/[^\s<>"']+/i);
+  if (m) return m[0].replace(/[),.;!?]+$/, '');
+  if (/^(www\.)?[\w-]+(\.[\w-]+)+(\/\S*)?$/i.test(t)) return 'https://' + t;
+  return '';
+}
+function cleanUrl(u) {
+  if (!u) return '';
+  try {
+    const url = new URL(u);
+    for (const k of [...url.searchParams.keys()]) if (/^(utm_|igsh|igshid|si$|feature$|fbclid|mibextid)/i.test(k)) url.searchParams.delete(k);
+    return url.toString();
+  } catch { return '' }
+}
+function sourceOf(u) {
+  try { const host = new URL(u).hostname.replace(/^www\.|^m\./, ''); return (SITES.find(([re]) => re.test(host)) || [null, host])[1] } catch { return '' }
+}
+function ytId(u) {
+  try {
+    const url = new URL(u), host = url.hostname.replace(/^www\.|^m\./, '');
+    const id = host === 'youtu.be' ? url.pathname.slice(1) : url.searchParams.get('v') || (url.pathname.match(/^\/(shorts|live|embed)\/([\w-]{11})/) || [])[2];
+    return /^[\w-]{11}$/.test(id || '') ? id : '';
+  } catch { return '' }
+}
+const isVideoLink = u => /\/(reel|reels|shorts|video|videos|watch|tv)\b|youtu\.be|tiktok\.com|fb\.watch/i.test(u || '');
+const istDate = iso => { try { return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(iso)) } catch { return '' } };
+function bmMsg(kind, text) { msg('bmMsg', kind, text) }
+
+function stageShot(file) {
+  if (!file || !/^image\/(png|jpeg|webp|gif)$/.test(file.type)) { bmMsg('err', 'Screenshots can be PNG, JPEG, WebP or GIF.'); return }
+  if (file.size > MAX_FILE) { bmMsg('err', 'That image is over 50 MB.'); return }
+  const bm = state.bm;
+  if (bm.preview) URL.revokeObjectURL(bm.preview);
+  bm.file = file; bm.preview = URL.createObjectURL(file);
+  const box = $('bmShot');
+  box.replaceChildren(h('img', { src: bm.preview, alt: 'Screenshot to save' }),
+    h('span', { class: 'quiet' }, 'Screenshot added'),
+    h('button', { type: 'button', class: 'btn ghost sm', onclick: clearShot }, 'Remove'));
+  box.classList.remove('hide');
+  bmMsg('', '');
+  $('bmNote').focus({ preventScroll: true });
+}
+function clearShot() {
+  const bm = state.bm;
+  if (bm.preview) URL.revokeObjectURL(bm.preview);
+  bm.file = null; bm.preview = null;
+  $('bmShot').replaceChildren(); $('bmShot').classList.add('hide');
+}
+
+async function saveBookmark() {
+  const bm = state.bm;
+  if (bm.saving) return;
+  const raw_ = $('bmUrl').value.trim(), note = $('bmNote').value.trim();
+  const url = cleanUrl(findUrl(raw_));
+  if (raw_ && !url) { bmMsg('err', 'That doesn’t look like a link. It should start with https://'); return }
+  if (!url && !bm.file) { bmMsg('err', 'Paste a link or add a screenshot first.'); $('bmUrl').focus(); return }
+  const dupe = url && state.bookmarks.find(b => b.url === url);
+  if (dupe) { bmMsg('err', `That link is already saved (${shortDate(istDate(dupe.createdAt))}).`); return }
+  const id = 'bm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+  bm.saving = true; $('bmSave').disabled = true; $('bmSave').textContent = 'Saving…';
+  try {
+    const files = []; let image = '';
+    if (bm.file) {
+      const f = await shrinkImage(bm.file);
+      image = `${BM_DIR}/${id}.${(REF_TYPES[f.type] || REF_TYPES[bm.file.type])[1]}`;
+      files.push({ path: image, b64: await fileB64(f) });
+    }
+    const source = url ? sourceOf(url) : '';
+    const entry = { id, ...(url ? { url, source } : {}), ...(image ? { image } : {}), note, createdAt: new Date().toISOString() };
+    await saveBookmarks(list => [entry, ...list], `planner: bookmark ${source || 'screenshot'}${note ? ` — ${note.slice(0, 50)}` : ''}`, files);
+    $('bmUrl').value = ''; $('bmNote').value = ''; clearShot();
+    bmMsg('ok', 'Saved to bookmarks.');
+    renderBookmarks();
+  } catch (e) { bmMsg('err', e.message || 'Couldn’t save. Try again.') }
+  bm.saving = false; $('bmSave').disabled = false; $('bmSave').textContent = 'Save';
+}
+async function deleteBookmark(b) {
+  if (state.bm.saving) return;
+  state.bm.saving = true;
+  try {
+    await saveBookmarks(list => list.filter(x => x.id !== b.id), `planner: remove bookmark ${b.source || 'screenshot'}`, b.image ? [{ path: b.image, del: true }] : []);
+    bmMsg('ok', 'Bookmark removed.');
+  } catch (e) { bmMsg('err', e.message) }
+  state.bm.saving = false;
+  renderBookmarks();
+}
+
+function renderBookmarks() {
+  const q = $('bmSearch').value.trim().toLowerCase();
+  const all = state.bookmarks;
+  const list = q ? all.filter(b => [b.note, b.url, b.source].some(v => String(v || '').toLowerCase().includes(q))) : all;
+  $('bmCount').textContent = !state.loaded ? 'Loading…' : q ? `${list.length} of ${all.length}` : `${all.length} saved`;
+  if (!state.loaded) { $('bmList').replaceChildren(); return }
+  if (!list.length) {
+    $('bmList').replaceChildren(h('div', { class: 'bm-empty' }, q ? 'No bookmarks match that search.' : 'No bookmarks yet. Paste a link or a screenshot above to save your first one.'));
+    return;
+  }
+  $('bmList').replaceChildren(...list.map(bmCard));
+}
+function bmCard(b) {
+  const url = safeUrl(b.url), yt = url ? ytId(url) : '';
+  const label = b.note || b.source || 'Bookmark';
+  const tile = () => h('div', { class: 'site' }, h('b', null, (b.source || '?').slice(0, 1).toUpperCase()), b.source || 'Link');
+  const media = url
+    ? h('a', { class: 'bm-media', href: url, target: '_blank', rel: 'noopener noreferrer', 'aria-label': `Open ${label}` })
+    : h('a', { class: 'bm-media', href: '#', 'aria-label': `View screenshot: ${label}`, onclick: async e => { e.preventDefault(); const u = await refSrc(b.image); if (u) window.open(u, '_blank') } });
+  if (b.image) {
+    media.textContent = '…';
+    refSrc(b.image).then(u => media.replaceChildren(u ? h('img', { src: u, alt: label, loading: 'lazy' }) : tile(), url && isVideoLink(url) ? h('span', { class: 'play' }, '▶ Video') : ''));
+  } else if (yt) {
+    const img = h('img', { src: `https://i.ytimg.com/vi/${yt}/hqdefault.jpg`, alt: label, loading: 'lazy', referrerpolicy: 'no-referrer' });
+    img.addEventListener('error', () => img.replaceWith(tile()), { once: true });
+    media.append(img);
+  } else media.append(tile());
+  if (!b.image && url && isVideoLink(url)) media.append(h('span', { class: 'play' }, '▶ Video'));
+  const d = istDate(b.createdAt);
+  return h('article', { class: 'bm-card' }, media,
+    h('div', { class: 'bm-body' },
+      h('div', { class: 'bm-meta' }, h('span', { class: 'badge plain' }, b.source || 'Screenshot'), d ? h('span', null, shortDate(d)) : null),
+      b.note ? h('div', { class: 'bm-note' }, b.note) : null,
+      url ? h('div', { class: 'bm-url', title: url }, url.replace(/^https?:\/\/(www\.)?/, '')) : null,
+      h('div', { class: 'bm-actions' },
+        url ? h('a', { class: 'mini', href: url, target: '_blank', rel: 'noopener noreferrer' }, 'Open ↗') : null,
+        url ? h('button', { type: 'button', class: 'mini', onclick: e => copyText(e.currentTarget, url, e.currentTarget.parentElement, 'Copy link') }, 'Copy link') : null,
+        h('button', { type: 'button', class: 'btn danger', onclick: e => { if (armTap(e.currentTarget, 'Tap again')) deleteBookmark(b) } }, 'Delete'))));
+}
+
+function applyView() {
+  const on = !!cfg().tok;
+  state.view = location.hash === '#bookmarks' ? 'bookmarks' : 'calendar';
+  const cal = on && state.view === 'calendar', bm = on && state.view === 'bookmarks';
+  for (const id of ['pageHead', 'stats', 'days', 'ahead']) $(id).classList.toggle('hide', !cal);
+  $('bookmarksView').classList.toggle('hide', !bm);
+  for (const [id, v] of [['tabCalendar', 'calendar'], ['tabBookmarks', 'bookmarks']]) { if (state.view === v) $(id).setAttribute('aria-current', 'page'); else $(id).removeAttribute('aria-current') }
+  if (bm) renderBookmarks();
+}
+window.addEventListener('hashchange', () => { if (state.editing && !state.saving) closeEditor(); applyView(); window.scrollTo(0, 0) });
+$('bmSave').onclick = saveBookmark;
+for (const id of ['bmUrl', 'bmNote']) $(id).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); saveBookmark() } });
+$('bmFile').addEventListener('change', e => { const f = e.target.files[0]; if (f) stageShot(f); e.target.value = '' });
+$('bmSearch').addEventListener('input', renderBookmarks);
+$('bmPaste').onclick = async () => {
+  try {
+    if (navigator.clipboard && navigator.clipboard.read) {
+      for (const item of await navigator.clipboard.read()) {
+        const t = item.types.find(x => /^image\/(png|jpeg|webp|gif)$/.test(x));
+        if (t) { const blob = await item.getType(t); stageShot(new File([blob], 'screenshot.' + t.split('/')[1], { type: t })); return }
+      }
+    }
+  } catch { /* fall through to text */ }
+  try {
+    const u = findUrl(await navigator.clipboard.readText());
+    if (u) { $('bmUrl').value = cleanUrl(u) || u; bmMsg('', ''); $('bmNote').focus({ preventScroll: true }); return }
+    bmMsg('err', 'The clipboard has no link or image. Copy one first, or tap Screenshot.');
+  } catch { bmMsg('err', 'Your browser didn’t allow reading the clipboard. Long-press the link box and choose Paste.') }
+};
+const drop = $('bmDrop');
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over') });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => {
+  e.preventDefault(); drop.classList.remove('over');
+  const f = [...(e.dataTransfer?.files || [])].find(x => x.type.startsWith('image/'));
+  if (f) return stageShot(f);
+  const u = findUrl(e.dataTransfer?.getData('text/uri-list') || e.dataTransfer?.getData('text/plain'));
+  if (u) $('bmUrl').value = cleanUrl(u) || u;
+});
+// Paste a screenshot (or a link) anywhere on the Bookmarks page.
+document.addEventListener('paste', e => {
+  if (state.view !== 'bookmarks' || state.editing || !cfg().tok) return;
+  const f = [...(e.clipboardData?.files || [])].find(x => x.type.startsWith('image/'));
+  if (f) { e.preventDefault(); stageShot(f); return }
+  const text = e.clipboardData?.getData('text') || '';
+  const u = findUrl(text);
+  if (!u) return;
+  if (e.target === $('bmUrl') || !e.target.closest('input, textarea')) { e.preventDefault(); $('bmUrl').value = cleanUrl(u) || u; $('bmNote').focus({ preventScroll: true }) }
+});
 
 // ── Setup and navigation ────────────────────────────────────────────────
 function boot() {
   const c = cfg(), on = !!c.tok;
   $('repo').value = c.repo; $('branch').value = c.branch;
   $('setup').classList.toggle('hide', on);
-  for (const id of ['topActions', 'pageHead', 'stats', 'days', 'ahead', 'foot']) $(id).classList.toggle('hide', !on);
+  for (const id of ['topActions', 'foot']) $(id).classList.toggle('hide', !on);
+  applyView();
   $('repoLbl').textContent = on ? `${c.repo} · ${c.branch}` : '';
   render();
   if (!on) return;
