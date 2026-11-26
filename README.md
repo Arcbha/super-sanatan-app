@@ -9,9 +9,9 @@ The content planner for Super Sanatan: a 4-day calendar in IST with panchang obs
 
 ## Install on a phone
 
-- **Android (Chrome):** open the page → menu ⋮ → *Add to Home screen* / *Install*. Super Sanatan then appears in every app's Share menu: Instagram → Share → Super Sanatan opens a new plan with the link as a reference.
+- **Android (Chrome):** open the page → menu ⋮ → *Add to Home screen* / *Install*. Super Sanatan then appears in every app's Share menu: Instagram → Share → Super Sanatan saves the link to Bookmarks.
 - **iPhone (Safari):** open the page → Share → *Add to Home Screen*. iOS doesn't let web pages join the Share menu, so a Shortcut does it once: Shortcuts → **+** → *Receive* **URLs** *from* **Share Sheet** → add **URL Encode** (Shortcut Input) → add **Open URLs** with `https://arcbha.github.io/super-sanatan-app/?url=` followed by the *URL Encoded Text* variable → name it **Send to Super Sanatan**.
-- The page reads `?url=`, `?text=` or `?title=`.
+- Shared links land in **Bookmarks**, ready to save with one tap. The page reads `?url=`, `?text=` or `?title=`.
 
 ## Using it
 
@@ -21,3 +21,12 @@ The content planner for Super Sanatan: a 4-day calendar in IST with panchang obs
 - **Write with Claude** (editor → Midjourney prompt) saves the plan and asks Claude to write the prompt from its references. A GitHub Action in Content-distribution (`planner-ai-prompt.yml`, using the `ANTHROPIC_API_KEY` secret there) does the work and writes the prompt back, usually within a minute; the plan card shows *Claude is writing…* meanwhile. If the plan already had a prompt, Claude's version appears as a suggestion with **Use this prompt**.
 - **Copy MJ prompt / Imagine ↗ / Open generation ↗** for Midjourney (it has no public API, so prompts are copied across).
 - **Copy brief for Claude** copies the plan with its reference file paths, to paste into Claude Code in Content-distribution.
+
+## Bookmarks
+
+A plain shelf for artform videos and posts you want to remember (top bar → **Bookmarks**, or `#bookmarks`). Not references: nothing here is sent to Claude.
+
+- Paste a link (or tap **Paste**), and/or add a screenshot: **Screenshot**, drag it in, or paste it anywhere on the page. Add a note if you like, then **Save** (Enter works too).
+- Tracking bits are removed from links (`igsh`, `utm_…`, `si`, …); a link already saved is refused with the date it was saved.
+- Cards show the screenshot, or the YouTube thumbnail, or the site name; **Open ↗**, **Copy link**, **Delete** (tap twice). Search filters by note, link and site.
+- Stored in Content-distribution as `planner/bookmarks.json` + screenshots in `planner/bookmarks/` (format in `planner/README.md`).
