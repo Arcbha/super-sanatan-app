@@ -916,8 +916,8 @@ function boot() {
   applyView();
   $('repoLbl').textContent = on ? `${c.repo} · ${c.branch}` : '';
   render();
-  if (!on) return;
-  api('/user').then(u => $('who').textContent = 'Signed in as @' + u.login).catch(() => {});
+  if (!on) { $('who').textContent = ''; return }
+  api('/user').then(u => $('who').textContent = '@' + u.login).catch(() => {});
   loadAll(true);
 }
 $('connect').onclick = async () => {
