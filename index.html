@@ -215,6 +215,28 @@ form.plan-form { display: flex; flex-direction: column; min-height: 0; flex: 1; 
 .form-actions { display: flex; gap: 8px; justify-content: space-between; align-items: center; padding: 14px 20px calc(14px + env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: var(--surface); }
 .form-actions .right { display: flex; gap: 8px; }
 @media (prefers-reduced-motion: no-preference) { .drawer { animation: slidein .18s ease-out; } @keyframes slidein { from { transform: translateX(24px); opacity: .6; } to { transform: none; opacity: 1; } } }
+
+/* Write with Claude */
+.ai-panel { border: 1px solid var(--border); border-radius: 10px; background: var(--bg); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.ai-row { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+@media (max-width: 420px) { .ai-row { flex-direction: column; align-items: stretch; } }
+.ai-copy { min-width: 0; }
+.ai-title { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13.5px; color: var(--text); }
+.ai-title .icon { color: var(--indigo); }
+.ai-sub { font-size: 12.5px; color: var(--text-3); margin-top: 2px; }
+.btn.claude { background: var(--indigo-soft); border-color: transparent; color: var(--indigo); box-shadow: none; font-weight: 600; }
+.btn.claude:hover { filter: brightness(.97); }
+.ai-result { border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.ai-result-label { font-size: 12px; font-weight: 500; color: var(--text-3); }
+.ai-result-text { margin: 0; font-size: 13.5px; line-height: 1.5; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px; overflow-wrap: anywhere; }
+.ai-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.badge.ai { background: var(--indigo-soft); color: var(--indigo); align-self: flex-start; }
+.badge.MEGA { align-self: flex-start; }
+.badge.ai.working::before { animation: pulse 1.2s ease-in-out infinite; }
+.spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .spinner, .badge.ai.working::before { animation: none; } }
 </style>
 </head>
 <body>

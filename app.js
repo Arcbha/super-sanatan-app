@@ -5,7 +5,8 @@
 const $ = id => document.getElementById(id);
 const API = 'https://api.github.com';
 const K = { tok: 'ss.token', repo: 'ss.repo', branch: 'ss.branch', share: 'ss.share' };
-const PLANS = 'planner/plans.json', PANCHANG = 'data/panchang_2026.json', REFS = 'planner/refs';
+const PLANS = 'planner/plans.json', PANCHANG = 'data/panchang_2026.json', REFS = 'planner/refs', REQUESTS = 'planner/requests';
+const POLL_MS = 7000, AI_SLOW_MS = 4 * 60 * 1000, AI_GIVE_UP_MS = 15 * 60 * 1000;
 const MAX_FILE = 50 * 1024 * 1024, MAX_SIDE = 2000, JPEG_Q = 0.88, MAX_REFS = 16;
 
 // ── Rules mirrored from core/strategy_engine.py ─────────────────────────
@@ -73,6 +74,14 @@ function h(tag, attrs, ...kids) {
   for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
   return el;
 }
+function icon(d) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16'); svg.setAttribute('class', 'icon'); svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '1.5'); svg.setAttribute('stroke-linejoin', 'round');
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p.setAttribute('d', d); svg.append(p);
+  return svg;
+}
+const SPARK = 'M8 1.5 9.4 6.6 14.5 8 9.4 9.4 8 14.5 6.6 9.4 1.5 8 6.6 6.6Z';
 function msg(id, kind, text) { const m = $(id); m.className = 'msg' + (id === 'appMsg' ? ' banner' : '') + (kind ? ' ' + kind : ''); m.textContent = text || ''; m.hidden = !text }
 // Tap twice to confirm: confirm() pop-ups are blocked in some in-app browsers.
 function armTap(btn, label) {
@@ -206,6 +215,18 @@ const state = {
 };
 const cleanRefs = refs => (Array.isArray(refs) ? refs : []).filter(r => r && ((r.type === 'text' && typeof r.text === 'string' && r.text.trim()) || (['image', 'video', 'pdf'].includes(r.type) && typeof r.path === 'string' && r.path.startsWith(REFS + '/'))));
 const kindLabel = k => (KINDS.find(x => x[0] === k) || [null, 'Item'])[1];
+// Claude prompt state on a plan: queued (Action running), done (text ready), error, or none.
+function aiState(p) {
+  const a = p && p.aiPrompt;
+  if (!a || typeof a !== 'object') return { kind: 'none' };
+  if (a.status === 'queued') {
+    const age = Date.now() - Date.parse(a.requestedAt || 0);
+    return { kind: age > AI_GIVE_UP_MS ? 'stuck' : 'queued', slow: age > AI_SLOW_MS };
+  }
+  if (a.status === 'error') return { kind: 'error', error: String(a.error || 'Unknown error') };
+  if (a.status === 'done' && typeof a.text === 'string' && a.text.trim()) return { kind: 'done', text: a.text.trim(), suggestion: a.text.trim() !== String(p.mjPrompt || '').trim() };
+  return { kind: 'none' };
+}
 
 async function loadAll(first) {
   msg('appMsg', '', first ? 'Loading from GitHub…' : '');
@@ -226,6 +247,32 @@ async function loadAll(first) {
   }
   if (!state.editing) render();
   takeShared();
+  schedulePoll();
+}
+
+// While Claude is writing a prompt, re-read plans.json every few seconds until the Action has answered.
+let pollTimer = null;
+function schedulePoll() {
+  if (pollTimer || !cfg().tok) return;
+  if (!state.plans.some(p => aiState(p).kind === 'queued')) return;
+  pollTimer = setTimeout(poll, POLL_MS);
+}
+async function poll() {
+  pollTimer = null;
+  if (document.visibilityState !== 'visible' || state.editing || state.saving) { schedulePoll(); return }
+  try {
+    const before = new Map(state.plans.map(p => [p.id, aiState(p).kind]));
+    const plans = parsePlans(await raw(PLANS));
+    if (state.editing || state.saving) { schedulePoll(); return }
+    state.plans = plans;
+    for (const p of plans) {
+      const k = aiState(p).kind;
+      if (before.get(p.id) === 'queued' && k === 'done') msg('appMsg', 'ok', `Claude wrote the Midjourney prompt for “${p.title}”.`);
+      if (before.get(p.id) === 'queued' && k === 'error') msg('appMsg', 'err', `Claude couldn't write a prompt for “${p.title}”. Open the plan to see why.`);
+    }
+    render();
+  } catch { /* network blip: try again next tick */ }
+  schedulePoll();
 }
 
 // ── Calendar ────────────────────────────────────────────────────────────
@@ -333,7 +380,15 @@ function planRow(p) {
       h('button', { type: 'button', class: `badge ${status}`, title: 'Move to the next status', onclick: e => { e.stopPropagation(); cycleStatus(p, e.currentTarget) } }, STATUSES.find(s => s[0] === status)[1])),
     meta ? h('span', { class: 'plan-meta' }, meta) : null,
     p.notes ? h('span', { class: 'plan-meta' }, String(p.notes)) : null,
-    refStrip(p), planActions(p));
+    aiChip(p), refStrip(p), planActions(p));
+}
+function aiChip(p) {
+  const a = aiState(p);
+  if (a.kind === 'queued') return h('span', { class: 'badge ai working' }, a.slow ? 'Claude is taking a while…' : 'Claude is writing…');
+  if (a.kind === 'stuck') return h('span', { class: 'badge MEGA' }, 'Claude didn’t answer');
+  if (a.kind === 'error') return h('span', { class: 'badge MEGA', title: a.error }, 'Claude prompt failed');
+  if (a.kind === 'done' && a.suggestion) return h('span', { class: 'badge ai' }, 'New Claude suggestion');
+  return null;
 }
 
 function thumb(r, small) {
@@ -476,8 +531,9 @@ function planForm() {
         h('label', { class: 'field', for: `n-${fid}` }, 'Notes', h('textarea', { id: `n-${fid}`, name: 'notes', rows: '3', maxlength: '1000', placeholder: 'Verse, caption idea, look…', value: d.notes }))),
       h('div', { class: 'form-section' }, h('div', { class: 'form-section-title' }, 'References'), refsBox),
       h('div', { class: 'form-section' },
-        h('div', { class: 'form-section-title' }, 'Midjourney',
-          h('button', { type: 'button', class: 'mini', onclick: () => { sync(form); const ta = form.querySelector('textarea[name=mjPrompt]'); ta.value = starterPrompt(); d.mjPrompt = ta.value; ta.focus() } }, 'Write starter prompt')),
+        h('div', { class: 'form-section-title' }, 'Midjourney prompt',
+          h('button', { type: 'button', class: 'btn ghost sm', onclick: () => { sync(form); const ta = form.querySelector('textarea[name=mjPrompt]'); ta.value = starterPrompt(); d.mjPrompt = ta.value; ta.focus() } }, 'Starter prompt')),
+        aiPanel(() => form, sync),
         h('label', { class: 'field', for: `mp-${fid}` }, 'Prompt', h('textarea', { id: `mp-${fid}`, name: 'mjPrompt', rows: '3', maxlength: '4000', placeholder: 'Paste or write the /imagine prompt', value: d.mjPrompt })),
         h('label', { class: 'field', for: `ml-${fid}` }, 'Generation link', h('input', { type: 'url', id: `ml-${fid}`, name: 'mjLink', inputmode: 'url', value: d.mjLink, placeholder: 'https://www.midjourney.com/jobs/…' }))),
       state.formError ? h('div', { class: 'msg banner err', role: 'alert' }, state.formError) : null),
@@ -488,6 +544,31 @@ function planForm() {
         h('button', { type: 'submit', class: 'btn primary', disabled: state.saving }, state.saving ? `Saving… ${Math.round(state.progress * 100)}%` : state.editing.id ? 'Save changes' : 'Create plan'))));
   renderRefs(refsBox);
   return form;
+}
+
+function aiPanel(getForm, sync) {   // the form is still being built when this runs
+  const plan = state.editing.id ? state.plans.find(x => x.id === state.editing.id) : null;
+  const a = aiState(plan);
+  const d = state.draft;
+  const busy = a.kind === 'queued';
+  const box = h('div', { class: 'ai-panel' },
+    h('div', { class: 'ai-row' },
+      h('div', { class: 'ai-copy' },
+        h('div', { class: 'ai-title' }, icon(SPARK), 'Write with Claude'),
+        h('div', { class: 'ai-sub' }, busy ? (a.slow ? 'Still working. If nothing arrives in a few minutes, check the Actions tab in Content-distribution.' : 'Claude is reading the references. This usually takes under a minute; you can close this panel.')
+          : 'Claude looks at this plan’s reference art, written references, notes, deity and day, then writes the prompt. Saves the plan first.')),
+      h('button', { type: 'button', class: 'btn claude sm', disabled: busy || state.saving, onclick: () => { sync(getForm()); savePlan({ ai: true }) } },
+        busy ? h('span', { class: 'spinner', 'aria-hidden': 'true' }) : icon(SPARK), busy ? 'Writing…' : a.kind === 'done' ? 'Write again' : 'Write with Claude')));
+  if (a.kind === 'done' && a.suggestion) {
+    box.append(h('div', { class: 'ai-result' },
+      h('div', { class: 'ai-result-label' }, 'Claude’s prompt'),
+      h('p', { class: 'ai-result-text' }, a.text),
+      h('div', { class: 'ai-actions' },
+        h('button', { type: 'button', class: 'btn primary sm', onclick: () => { const ta = getForm().querySelector('textarea[name=mjPrompt]'); ta.value = a.text; d.mjPrompt = a.text; box.querySelector('.ai-result')?.remove() } }, 'Use this prompt'),
+        h('button', { type: 'button', class: 'btn sm', onclick: e => copyText(e.currentTarget, a.text, box, 'Copy') }, 'Copy'))));
+  }
+  if (a.kind === 'error' || a.kind === 'stuck') box.append(h('div', { class: 'msg banner err' }, a.kind === 'stuck' ? 'Claude didn’t answer. Check that the ANTHROPIC_API_KEY secret is set and the Actions tab shows the “Planner — Claude prompt writer” run, then try again.' : `Claude couldn’t write a prompt: ${a.error}`));
+  return box;
 }
 
 function renderRefs(box, note) {
@@ -542,7 +623,7 @@ function starterPrompt() {
 
 function usedElsewhere(path, exceptId) { return state.plans.some(p => p.id !== exceptId && cleanRefs(p.refs).some(r => r.path === path)) }
 
-async function savePlan() {
+async function savePlan(opts = {}) {
   if (state.saving) return;
   const d = state.draft, editingId = state.editing.id;
   const title = d.title.trim();
@@ -564,17 +645,19 @@ async function savePlan() {
     }
     for (const path of state.removed) if (!usedElsewhere(path, id)) files.push({ path, del: true });
     const now = new Date().toISOString();
-    const fields = { title, date: d.date, kind: d.kind, deity: d.deity, status: d.status, platforms: d.platforms, notes: d.notes.trim(), mjPrompt: d.mjPrompt.trim(), mjLink: d.mjLink.trim(), refs, updatedAt: now };
-    const upload = files.filter(f => f.b64).length;
+    if (opts.ai) files.push({ path: `${REQUESTS}/${id}-${stamp()}.json`, b64: b64utf8(JSON.stringify({ planId: id, requestedAt: now }) + '\n') });
+    const fields = { title, date: d.date, kind: d.kind, deity: d.deity, status: d.status, platforms: d.platforms, notes: d.notes.trim(), mjPrompt: d.mjPrompt.trim(), mjLink: d.mjLink.trim(), refs, updatedAt: now, ...(opts.ai ? { aiPrompt: { status: 'queued', requestedAt: now } } : {}) };
+    const upload = files.filter(f => f.b64 && f.path.startsWith(REFS + '/')).length;
     await savePlans(plans => {
       const i = plans.findIndex(p => p.id === id);
       if (i >= 0) plans[i] = { ...plans[i], ...fields };
       else plans.push({ id, createdAt: now, ...fields });
       return plans;
-    }, `planner: ${editingId ? 'update' : 'add'} "${title}" (${d.date})${upload ? ` with ${upload} reference file${upload > 1 ? 's' : ''}` : ''}`, files, p => { state.progress = p; const b = document.querySelector('form.plan-form button[type=submit]'); if (b) b.textContent = `Saving… ${Math.round(p * 100)}%` });
+    }, `planner: ${editingId ? 'update' : 'add'} "${title}" (${d.date})${upload ? ` with ${upload} reference file${upload > 1 ? 's' : ''}` : ''}${opts.ai ? ' + ask Claude for a prompt' : ''}`, files, p => { state.progress = p; const b = document.querySelector('form.plan-form button[type=submit]'); if (b) b.textContent = `Saving… ${Math.round(p * 100)}%` });
     state.saving = false;
     closeEditor();
-    msg('appMsg', 'ok', `Saved “${title}” to the repo.`);
+    msg('appMsg', 'ok', opts.ai ? `Saved “${title}”. Claude is writing the prompt; it appears on the plan in about a minute.` : `Saved “${title}” to the repo.`);
+    schedulePoll();
   } catch (e) {
     state.saving = false; state.formError = e.message || 'Couldn’t save. Try again.'; render();
   }
