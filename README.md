@@ -18,7 +18,7 @@ The content planner for Super Sanatan: a 4-day calendar in IST with panchang obs
 - **+ Add plan** on any day opens the side panel: title, type, deity, status, date, platforms, notes, references and Midjourney.
 - **References:** upload, drop or paste images (resized to 2000 px), MP4/MOV/WebM or PDF, and add written references. Files upload to the repo when you save.
 - **Status badge** on a plan moves it Idea → Making → Ready → Posted.
-- **Write with Claude** (editor → Midjourney prompt) saves the plan and asks Claude to write the prompt from its references. A GitHub Action in Content-distribution (`planner-ai-prompt.yml`, using the `ANTHROPIC_API_KEY` secret there) does the work and writes the prompt back, usually within a minute; the plan card shows *Claude is writing…* meanwhile. If the plan already had a prompt, Claude's version appears as a suggestion with **Use this prompt**.
+- **Write with Claude** (editor → Midjourney prompt) saves the plan and asks Claude to write the prompt from its references. A GitHub Action in Content-distribution (`planner-ai-prompt.yml`, running Claude Code on your Claude Pro plan via the `claude setup-token` token saved as a secret there — no API credits) does the work and writes the prompt back, usually within a minute; the plan card shows *Claude is writing…* meanwhile. If the plan already had a prompt, Claude's version appears as a suggestion with **Use this prompt**.
 - **Copy MJ prompt / Imagine ↗ / Open generation ↗** for Midjourney (it has no public API, so prompts are copied across).
 - **Copy brief for Claude** copies the plan with its reference file paths, to paste into Claude Code in Content-distribution.
 

@@ -586,7 +586,7 @@ function aiPanel(getForm, sync) {   // the form is still being built when this r
         h('button', { type: 'button', class: 'btn primary sm', onclick: () => { const ta = getForm().querySelector('textarea[name=mjPrompt]'); ta.value = a.text; d.mjPrompt = a.text; box.querySelector('.ai-result')?.remove() } }, 'Use this prompt'),
         h('button', { type: 'button', class: 'btn sm', onclick: e => copyText(e.currentTarget, a.text, box, 'Copy') }, 'Copy'))));
   }
-  if (a.kind === 'error' || a.kind === 'stuck') box.append(h('div', { class: 'msg banner err' }, a.kind === 'stuck' ? 'Claude didn’t answer. Check that the ANTHROPIC_API_KEY secret is set and the Actions tab shows the “Planner — Claude prompt writer” run, then try again.' : `Claude couldn’t write a prompt: ${a.error}`));
+  if (a.kind === 'error' || a.kind === 'stuck') box.append(h('div', { class: 'msg banner err' }, a.kind === 'stuck' ? 'Claude didn’t answer. In Content-distribution, open Actions → “Planner — Claude prompt writer” to see why. Usually the Claude sign-in token is missing or expired: run `claude setup-token` and save it as the CLAUDE_CODE_OAUTH_TOKEN secret.' : `Claude couldn’t write a prompt: ${a.error}`));
   return box;
 }
 
