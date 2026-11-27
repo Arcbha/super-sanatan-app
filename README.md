@@ -28,10 +28,24 @@ A plain shelf for artform videos and posts you want to remember (top bar → **B
 
 - Paste a link (or tap **Paste**), and/or add a screenshot: **Screenshot**, drag it in, or paste it anywhere on the page. Add a note if you like, then **Save** (Enter works too).
 - Tracking bits are removed from links (`igsh`, `utm_…`, `si`, …); a link already saved is refused with the date it was saved.
-- Cards show the screenshot, or the YouTube thumbnail, or the site name; **Open ↗**, **Copy link**, **Delete** (tap twice). Search filters by note, link and site.
+- Cards show the screenshot, or the YouTube thumbnail, or the site name; **Open ↗**, **Copy link**, **Delete** (tap twice).
 - Stored in Content-distribution as `planner/bookmarks.json` + screenshots in `planner/bookmarks/` (format in `planner/README.md`).
 
 ## If it won't connect
 
 When connecting (or opening) fails, the app checks GitHub step by step and shows which step broke, with the fix: token not accepted (mistyped, expired or revoked), token can't see Content-distribution, token can read but not write (needs Contents: Read and write), branch not found, or no network. **Reconnect with a new token** appears on the banner if a saved token stops working. If the browser won't keep the token (private/incognito window or an in-app browser), the setup screen says so.
+
+## Artwork
+
+Artwork you want to replicate or draw strong inspiration from (top bar → **Artwork**, or `#artwork`). Choose, paste or drop one or more images, optionally set the deity, a source link and a note, then **Save artwork**. Each card has **Create from this**. Stored as `planner/artworks.json` + `planner/artworks/` in Content-distribution.
+
+## Create
+
+Make a still image from saved artwork with Claude Opus 5.5 (top bar → **Create**, or `#create`):
+
+1. Pick up to 3 pieces of artwork.
+2. Choose the deity (or leave it to the artwork), describe the image (pose, scene, mood, what to keep and what to change), pick **Post 4:5**, **Square 1:1** or **Story 9:16**, and whether to leave space for a verse.
+3. **Create with Opus.** Content-distribution's `planner-create.yml` Action runs Claude Code on your Claude Pro plan: Opus studies the artwork and writes the image prompt (shown on the card as soon as it's ready), then draws the image with code, looks at its own render and refines it. It takes a few minutes; the app updates by itself.
+
+Finished cards have **Open**, **Download**, **Copy prompt**, **Redraw** (edit the prompt and draw again) and **Delete**. Images are drawn with code, so they are crafted illustrations rather than photoreal paintings; the drawing instructions live in `tasks/planner_create.py` and will grow into fuller workflows. Stored as `planner/creations.json` + `planner/creations/<id>/` (image, prompt and drawing code).
 

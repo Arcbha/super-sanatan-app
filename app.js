@@ -7,6 +7,8 @@ const API = 'https://api.github.com';
 const K = { tok: 'ss.token', repo: 'ss.repo', branch: 'ss.branch', share: 'ss.share' };
 const PLANS = 'planner/plans.json', PANCHANG = 'data/panchang_2026.json', REFS = 'planner/refs', REQUESTS = 'planner/requests';
 const BOOKMARKS = 'planner/bookmarks.json', BM_DIR = 'planner/bookmarks';
+const ARTWORKS = 'planner/artworks.json', AW_DIR = 'planner/artworks', CREATIONS = 'planner/creations.json', CREATE_REQ = 'planner/create-requests';
+const ACTIVE = ['queued', 'briefing', 'drawing'];
 const POLL_MS = 7000, AI_SLOW_MS = 4 * 60 * 1000, AI_GIVE_UP_MS = 15 * 60 * 1000;
 const MAX_FILE = 50 * 1024 * 1024, MAX_SIDE = 2000, JPEG_Q = 0.88, MAX_REFS = 16;
 
@@ -212,9 +214,10 @@ async function saveBookmarks(mutate, message, files = []) {
   return result;
 }
 const blobUrls = new Map();
-function refSrc(path) {
-  if (!blobUrls.has(path)) blobUrls.set(path, raw(path, null, true).then(b => b ? URL.createObjectURL(b) : null).catch(() => null));
-  return blobUrls.get(path);
+function refSrc(path, ver = '') {
+  const key = path + '@' + ver;
+  if (!blobUrls.has(key)) blobUrls.set(key, raw(path, null, true).then(b => b ? URL.createObjectURL(b) : null).catch(() => null));
+  return blobUrls.get(key);
 }
 const fileB64 = blob => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.onerror = () => rej(fr.error); fr.readAsDataURL(blob) });
 async function shrinkImage(file) {                    // big photos → ≤2000 px JPEG; GIFs and small files untouched
@@ -235,6 +238,7 @@ const state = {
   today: istToday(), start: istToday(), panchang: null, plans: [], loaded: false,
   editing: null, draft: null, removed: new Set(), saving: false, progress: 0, formError: '', notice: '',
   view: 'calendar', bookmarks: [], bm: { file: null, preview: null, saving: false },
+  artworks: [], aw: { files: [], saving: false }, creations: [], cr: { picked: [], format: '4:5', saving: false, redraw: null },
 };
 const cleanRefs = refs => (Array.isArray(refs) ? refs : []).filter(r => r && ((r.type === 'text' && typeof r.text === 'string' && r.text.trim()) || (['image', 'video', 'pdf'].includes(r.type) && typeof r.path === 'string' && r.path.startsWith(REFS + '/'))));
 const kindLabel = k => (KINDS.find(x => x[0] === k) || [null, 'Item'])[1];
@@ -286,8 +290,10 @@ function reconnect() { store.del(K.tok); state.plans = []; state.loaded = false;
 async function loadAll(first) {
   msg('appMsg', '', first ? 'Loading from GitHub…' : '');
   try {
-    const [pan, plans, bms] = await Promise.all([state.panchang ? null : raw(PANCHANG), raw(PLANS), raw(BOOKMARKS)]);
+    const [pan, plans, bms, aws, crs] = await Promise.all([state.panchang ? null : raw(PANCHANG), raw(PLANS), raw(BOOKMARKS), raw(ARTWORKS), raw(CREATIONS)]);
     state.bookmarks = parseList(bms, 'bookmarks', BOOKMARKS);
+    state.artworks = parseList(aws, 'artworks', ARTWORKS);
+    state.creations = parseList(crs, 'creations', CREATIONS);
     if (pan) {
       const p = JSON.parse(pan);
       const festivals = (p.major_festivals || []).filter(e => e && isDate(e.date));
@@ -307,6 +313,9 @@ async function loadAll(first) {
   }
   if (!state.editing) render();
   if (state.view === 'bookmarks') renderBookmarks();
+  if (state.view === 'artwork') renderArtworks();
+  if (state.view === 'create') renderCreate();
+  scheduleCreatePoll();
   takeShared();
   schedulePoll();
 }
@@ -860,10 +869,9 @@ async function deleteBookmark(b) {
 }
 
 function renderBookmarks() {
-  const q = $('bmSearch').value.trim().toLowerCase();
+  const q = '';
   const all = state.bookmarks;
   const list = q ? all.filter(b => [b.note, b.url, b.source].some(v => String(v || '').toLowerCase().includes(q))) : all;
-  $('bmCount').textContent = !state.loaded ? 'Loading…' : q ? `${list.length} of ${all.length}` : `${all.length} saved`;
   if (!state.loaded) { $('bmList').replaceChildren(); return }
   if (!list.length) {
     $('bmList').replaceChildren(h('div', { class: 'bm-empty' }, q ? 'No bookmarks match that search.' : 'No bookmarks yet. Paste a link or a screenshot above to save your first one.'));
@@ -901,18 +909,22 @@ function bmCard(b) {
 
 function applyView() {
   const on = !!cfg().tok;
-  state.view = location.hash === '#bookmarks' ? 'bookmarks' : 'calendar';
-  const cal = on && state.view === 'calendar', bm = on && state.view === 'bookmarks';
-  for (const id of ['pageHead', 'stats', 'days', 'ahead']) $(id).classList.toggle('hide', !cal);
-  $('bookmarksView').classList.toggle('hide', !bm);
-  for (const [id, v] of [['tabCalendar', 'calendar'], ['tabBookmarks', 'bookmarks']]) { if (state.view === v) $(id).setAttribute('aria-current', 'page'); else $(id).removeAttribute('aria-current') }
-  if (bm) renderBookmarks();
+  const h = location.hash.replace('#', '');
+  state.view = ['create', 'artwork', 'bookmarks'].includes(h) ? h : 'calendar';
+  const show = v => on && state.view === v;
+  for (const id of ['pageHead', 'stats', 'days', 'ahead']) $(id).classList.toggle('hide', !show('calendar'));
+  $('createView').classList.toggle('hide', !show('create'));
+  $('artworkView').classList.toggle('hide', !show('artwork'));
+  $('bookmarksView').classList.toggle('hide', !show('bookmarks'));
+  for (const [id, v] of [['tabCalendar', 'calendar'], ['tabCreate', 'create'], ['tabArtwork', 'artwork'], ['tabBookmarks', 'bookmarks']]) { if (state.view === v) $(id).setAttribute('aria-current', 'page'); else $(id).removeAttribute('aria-current') }
+  if (show('bookmarks')) renderBookmarks();
+  if (show('artwork')) renderArtworks();
+  if (show('create')) renderCreate();
 }
 window.addEventListener('hashchange', () => { if (state.editing && !state.saving) closeEditor(); applyView(); window.scrollTo(0, 0) });
 $('bmSave').onclick = saveBookmark;
 for (const id of ['bmUrl', 'bmNote']) $(id).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); saveBookmark() } });
 $('bmFile').addEventListener('change', e => { const f = e.target.files[0]; if (f) stageShot(f); e.target.value = '' });
-$('bmSearch').addEventListener('input', renderBookmarks);
 $('bmPaste').onclick = async () => {
   try {
     if (navigator.clipboard && navigator.clipboard.read) {
@@ -940,6 +952,11 @@ drop.addEventListener('drop', e => {
 });
 // Paste a screenshot (or a link) anywhere on the Bookmarks page.
 document.addEventListener('paste', e => {
+  if (state.view === 'artwork' && !state.editing && cfg().tok) {
+    const imgs = [...(e.clipboardData?.files || [])].filter(x => x.type.startsWith('image/'));
+    if (imgs.length) { e.preventDefault(); stageArtworks(imgs) }
+    return;
+  }
   if (state.view !== 'bookmarks' || state.editing || !cfg().tok) return;
   const f = [...(e.clipboardData?.files || [])].find(x => x.type.startsWith('image/'));
   if (f) { e.preventDefault(); stageShot(f); return }
@@ -949,12 +966,243 @@ document.addEventListener('paste', e => {
   if (e.target === $('bmUrl') || !e.target.closest('input, textarea')) { e.preventDefault(); $('bmUrl').value = cleanUrl(u) || u; $('bmNote').focus({ preventScroll: true }) }
 });
 
+
+// ── Shared JSON list saver (artworks, creations) ────────────────────────
+async function saveDoc(path, key, mutate, message, files = [], onProgress) {
+  let result;
+  await commitFiles(files, message, onProgress, async headSha => {
+    result = mutate(parseList(await raw(path, headSha), key, path).map(x => ({ ...x })));
+    const body = JSON.stringify({ version: 1, note: 'Written by the Super Sanatan app. Format: planner/README.md', [key]: result }, null, 2) + '\n';
+    return [{ path, b64: b64utf8(body) }];
+  });
+  state[key] = result;
+  return result;
+}
+const deityOptions = (el, none) => el.replaceChildren(h('option', { value: '' }, none), ...DEITIES.map(d => h('option', { value: d }, d)));
+
+// ── Artwork: saved artwork to replicate or draw inspiration from ─────────
+function stageArtworks(files) {
+  const ok = files.filter(f => /^image\/(png|jpeg|webp|gif)$/.test(f.type) && f.size <= MAX_FILE);
+  if (ok.length < files.length) msg('awMsg', 'err', 'Some files were skipped: use PNG, JPEG, WebP or GIF under 50 MB.'); else msg('awMsg', '', '');
+  for (const f of ok.slice(0, 12 - state.aw.files.length)) state.aw.files.push({ file: f, preview: URL.createObjectURL(f) });
+  renderStaged();
+}
+function renderStaged() {
+  const box = $('awStaged');
+  box.replaceChildren(...state.aw.files.map((x, i) => h('span', { class: 'thumb-wrap' }, h('img', { src: x.preview, alt: 'Artwork to save' }),
+    h('button', { type: 'button', class: 'x', 'aria-label': 'Remove this image', onclick: () => { URL.revokeObjectURL(x.preview); state.aw.files.splice(i, 1); renderStaged() } }, '×'))));
+  box.classList.toggle('hide', !state.aw.files.length);
+  $('awSave').textContent = state.aw.files.length > 1 ? `Save ${state.aw.files.length} artworks` : 'Save artwork';
+}
+async function saveArtworks() {
+  const aw = state.aw;
+  if (aw.saving) return;
+  if (!aw.files.length) { msg('awMsg', 'err', 'Add an image first: choose, paste or drop one.'); return }
+  const url = $('awUrl').value.trim() ? cleanUrl(findUrl($('awUrl').value)) : '';
+  if ($('awUrl').value.trim() && !url) { msg('awMsg', 'err', 'The source link should start with https://'); return }
+  const deity = $('awDeity').value, note = $('awNote').value.trim();
+  aw.saving = true; $('awSave').disabled = true; $('awSave').textContent = 'Saving…';
+  try {
+    const files = [], entries = [], now = new Date().toISOString();
+    for (const x of aw.files) {
+      const f = await shrinkImage(x.file);
+      const id = 'aw' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+      const image = `${AW_DIR}/${id}.${(REF_TYPES[f.type] || REF_TYPES[x.file.type])[1]}`;
+      files.push({ path: image, b64: await fileB64(f) });
+      entries.push({ id, image, title: x.file.name.replace(/\.\w+$/, '').slice(0, 80), ...(deity ? { deity } : {}), ...(note ? { note } : {}), ...(url ? { url } : {}), createdAt: now });
+    }
+    await saveDoc(ARTWORKS, 'artworks', list => [...entries, ...list], `planner: save ${entries.length} artwork${entries.length > 1 ? 's' : ''}${deity ? ' (' + deity + ')' : ''}`, files,
+      p => { $('awSave').textContent = `Saving… ${Math.round(p * 100)}%` });
+    for (const x of aw.files) URL.revokeObjectURL(x.preview);
+    aw.files = []; renderStaged(); $('awNote').value = ''; $('awUrl').value = '';
+    msg('awMsg', 'ok', `Saved ${entries.length} artwork${entries.length > 1 ? 's' : ''}.`);
+    renderArtworks();
+  } catch (e) { msg('awMsg', 'err', e.message || 'Couldn’t save. Try again.') }
+  aw.saving = false; $('awSave').disabled = false; renderStaged();
+}
+async function deleteArtwork(a) {
+  try {
+    await saveDoc(ARTWORKS, 'artworks', list => list.filter(x => x.id !== a.id), `planner: delete artwork ${a.title || a.id}`, a.image ? [{ path: a.image, del: true }] : []);
+    state.cr.picked = state.cr.picked.filter(id => id !== a.id);
+    msg('awMsg', 'ok', 'Artwork deleted.');
+  } catch (e) { msg('awMsg', 'err', e.message) }
+  renderArtworks();
+}
+function artImg(path, alt, ver) {
+  const box = h('div', { class: 'art-img' }, '…');
+  refSrc(path, ver).then(u => box.replaceChildren(u ? h('img', { src: u, alt, loading: 'lazy' }) : 'Missing'));
+  return box;
+}
+function renderArtworks() {
+  if (!state.loaded) { $('awList').replaceChildren(); return }
+  if (!state.artworks.length) { $('awList').replaceChildren(h('div', { class: 'empty' }, 'No artwork saved yet. Add the pieces you want to replicate or draw inspiration from.')); return }
+  $('awList').replaceChildren(...state.artworks.map(a => {
+    const url = safeUrl(a.url), d = istDate(a.createdAt);
+    return h('article', { class: 'art-card' }, artImg(a.image, a.title || 'Artwork'),
+      h('div', { class: 'art-body' },
+        h('div', { class: 'art-title' }, a.deity || a.title || 'Artwork'),
+        a.note ? h('div', { class: 'art-meta' }, a.note) : null,
+        h('div', { class: 'art-meta' }, [d ? shortDate(d) : null, url ? sourceOf(url) : null].filter(Boolean).join(' · ')),
+        h('div', { class: 'art-actions' },
+          h('button', { type: 'button', class: 'mini go', onclick: () => { state.cr.picked = [a.id]; if (a.deity) $('crDeity').value = a.deity; location.hash = '#create' } }, 'Create from this'),
+          url ? h('a', { class: 'mini', href: url, target: '_blank', rel: 'noopener noreferrer' }, 'Source ↗') : null,
+          h('button', { type: 'button', class: 'btn danger', onclick: e => { if (armTap(e.currentTarget, 'Tap again')) deleteArtwork(a) } }, 'Delete'))));
+  }));
+}
+
+// ── Create: artwork + ask → Opus writes the prompt, then draws the image ─
+const FORMAT_LABEL = { '4:5': 'Post 4:5', '1:1': 'Square 1:1', '9:16': 'Story 9:16' };
+const ASPECT = { '4:5': '4 / 5', '1:1': '1 / 1', '9:16': '9 / 16' };
+function renderCreate() {
+  const cr = state.cr;
+  cr.picked = cr.picked.filter(id => state.artworks.some(a => a.id === id));
+  $('crPicked').textContent = cr.picked.length ? `${cr.picked.length} of 3 picked` : 'up to 3';
+  if (!state.loaded) $('crPick').replaceChildren(h('div', { class: 'pick-empty' }, 'Loading…'));
+  else if (!state.artworks.length) $('crPick').replaceChildren(h('div', { class: 'pick-empty' }, h('span', null, 'Save artwork first, then pick it here.'), h('a', { class: 'mini go', href: '#artwork' }, 'Add artwork')));
+  else $('crPick').replaceChildren(...state.artworks.map(a => {
+    const on = cr.picked.includes(a.id);
+    const b = h('button', { type: 'button', class: 'pick', 'aria-pressed': String(on), 'aria-label': `${on ? 'Unpick' : 'Pick'} ${a.deity || a.title || 'artwork'}`,
+      onclick: () => {
+        if (on) cr.picked = cr.picked.filter(x => x !== a.id);
+        else if (cr.picked.length < 3) { cr.picked.push(a.id); if (a.deity && !$('crDeity').value) $('crDeity').value = a.deity }
+        else msg('crMsg', 'err', 'Pick up to 3 pieces of artwork.');
+        renderCreate();
+      } }, h('span', { class: 'tick', 'aria-hidden': 'true' }, on ? '✓' : ''));
+    refSrc(a.image).then(u => { if (u) b.prepend(h('img', { src: u, alt: '' })) });
+    return b;
+  }));
+  for (const btn of document.querySelectorAll('.segmented.fmt button')) btn.setAttribute('aria-pressed', String(btn.dataset.fmt === cr.format));
+  renderCreations();
+}
+async function createWithOpus() {
+  const cr = state.cr;
+  if (cr.saving) return;
+  if (!cr.picked.length) { msg('crMsg', 'err', 'Pick at least one piece of artwork to work from.'); return }
+  const ask = $('crAsk').value.trim(), deity = $('crDeity').value;
+  if (!ask && !deity) { msg('crMsg', 'err', 'Describe the image, or at least choose a deity.'); $('crAsk').focus(); return }
+  const id = 'cr' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), now = new Date().toISOString();
+  const entry = { id, artworkIds: [...cr.picked], ...(deity ? { deity } : {}), ask, format: cr.format, textSpace: $('crText').checked, status: 'queued', requestedAt: now, createdAt: now };
+  cr.saving = true; $('crGo').disabled = true; $('crGo').textContent = 'Sending to Opus…';
+  try {
+    await saveDoc(CREATIONS, 'creations', list => [entry, ...list], `planner: create ${deity || 'image'} — ${(ask || '').slice(0, 50)}`,
+      [{ path: `${CREATE_REQ}/${id}-${stamp()}.json`, b64: b64utf8(JSON.stringify({ creationId: id, mode: 'full', requestedAt: now }) + '\n') }]);
+    $('crAsk').value = ''; cr.picked = [];
+    msg('crMsg', 'ok', 'Sent. Opus is writing the prompt, then it will draw the image. Watch it below; it takes a few minutes.');
+    renderCreate(); scheduleCreatePoll();
+  } catch (e) { msg('crMsg', 'err', e.message || 'Couldn’t send. Try again.') }
+  cr.saving = false; $('crGo').disabled = false; $('crGo').textContent = 'Create with Opus';
+}
+async function redraw(c, brief) {
+  const now = new Date().toISOString();
+  try {
+    await saveDoc(CREATIONS, 'creations', list => list.map(x => x.id === c.id ? { ...x, brief, status: 'queued', error: '', requestedAt: now, updatedAt: now } : x),
+      `planner: redraw creation ${c.id}`, [{ path: `${CREATE_REQ}/${c.id}-${stamp()}.json`, b64: b64utf8(JSON.stringify({ creationId: c.id, mode: 'redraw', requestedAt: now }) + '\n') }]);
+    state.cr.redraw = null; msg('crMsg', 'ok', 'Redrawing with your prompt. It takes a few minutes.');
+    scheduleCreatePoll();
+  } catch (e) { msg('crMsg', 'err', e.message) }
+  renderCreations();
+}
+async function deleteCreation(c) {
+  try {
+    const files = (Array.isArray(c.files) ? c.files : []).filter(p => typeof p === 'string' && p.startsWith(`planner/creations/${c.id}/`)).map(path => ({ path, del: true }));
+    await saveDoc(CREATIONS, 'creations', list => list.filter(x => x.id !== c.id), `planner: delete creation ${c.id}`, files);
+    msg('crMsg', 'ok', 'Creation deleted.');
+  } catch (e) { msg('crMsg', 'err', e.message) }
+  renderCreations();
+}
+const modelName = m => String(m).replace(/^claude-/, '').replace(/-(\d+)-(\d+)$/, ' $1.$2').replace(/^\w/, x => x.toUpperCase());
+function creationAge(c) { return Date.now() - Date.parse(c.requestedAt || c.createdAt || 0) }
+function renderCreations() {
+  if (!state.loaded) { $('crList').replaceChildren(); return }
+  if (!state.creations.length) { $('crList').replaceChildren(h('div', { class: 'empty' }, 'Nothing created yet. Pick artwork above, describe what you want and tap Create with Opus.')); return }
+  $('crList').replaceChildren(...state.creations.map(c => {
+    const active = ACTIVE.includes(c.status), stuck = active && creationAge(c) > 45 * 60 * 1000;
+    const img = h('div', { class: 'cr-img', style: `aspect-ratio:${ASPECT[c.format] || '4 / 5'}` });
+    if (c.status === 'done' && c.image) {
+      img.textContent = '…';
+      refSrc(c.image, c.doneAt || c.updatedAt).then(u => img.replaceChildren(u ? h('img', { src: u, alt: c.caption || c.ask || 'Created image' }) : 'Image missing'));
+    } else {
+      const text = stuck ? 'This is taking much longer than usual. In Content-distribution, open Actions → “Planner — Opus image creator” to see why, or delete it and try again.'
+        : c.status === 'error' ? `Opus couldn’t make this image: ${c.error || 'unknown error'}`
+        : c.status === 'drawing' ? 'Opus is drawing the image… a few minutes'
+        : 'Opus is writing the prompt…';
+      img.append(h('div', { class: 'cr-status' }, active && !stuck ? h('span', { class: 'spinner', 'aria-hidden': 'true' }) : null, h('span', null, text)));
+      const refs = h('div', { class: 'cr-refs' });
+      for (const aid of (c.artworkIds || []).slice(0, 3)) { const a = state.artworks.find(x => x.id === aid); if (a) refSrc(a.image).then(u => { if (u) refs.append(h('img', { src: u, alt: '' })) }) }
+      img.append(refs);
+    }
+    const d = istDate(c.createdAt);
+    const actions = h('div', { class: 'cr-actions' });
+    if (c.status === 'done' && c.image) {
+      actions.append(
+        h('button', { type: 'button', class: 'mini go', onclick: async () => { const u = await refSrc(c.image, c.doneAt || c.updatedAt); if (u) window.open(u, '_blank') } }, 'Open'),
+        h('button', { type: 'button', class: 'mini', onclick: async e => { const u = await refSrc(c.image, c.doneAt || c.updatedAt); if (!u) return; const a = h('a', { href: u, download: `super-sanatan-${(c.deity || 'image').toLowerCase()}-${c.id}.png` }); document.body.append(a); a.click(); a.remove() } }, 'Download'));
+    }
+    if (c.brief) actions.append(h('button', { type: 'button', class: 'mini', onclick: e => copyText(e.currentTarget, c.brief, actions, 'Copy prompt') }, 'Copy prompt'));
+    if (!active || stuck) actions.append(h('button', { type: 'button', class: 'mini', onclick: () => { state.cr.redraw = state.cr.redraw === c.id ? null : c.id; renderCreations() } }, c.status === 'error' ? 'Try again' : 'Redraw'));
+    actions.append(h('button', { type: 'button', class: 'btn danger', onclick: e => { if (armTap(e.currentTarget, 'Tap again')) deleteCreation(c) } }, 'Delete'));
+    let editor = null;
+    if (state.cr.redraw === c.id) {
+      const ta = h('textarea', { 'aria-label': 'Prompt for the redraw', value: c.brief || '' });
+      editor = h('div', { class: 'cr-redraw' }, h('div', { class: 'quiet' }, c.brief ? 'Edit the prompt if you like, then redraw.' : 'Opus will write a new prompt from the artwork, then draw it.'), c.brief ? ta : null,
+        h('button', { type: 'button', class: 'btn primary', onclick: () => redraw(c, c.brief ? ta.value.trim() : '') }, c.brief ? 'Redraw with this prompt' : 'Try again'));
+    }
+    return h('article', { class: 'cr-card' }, img,
+      h('div', { class: 'cr-body' },
+        h('div', { class: 'cr-ask' }, c.ask || c.deity || 'Image'),
+        h('div', { class: 'cr-meta' }, [c.deity, FORMAT_LABEL[c.format], d ? shortDate(d) : null, c.status === 'done' && c.model ? 'by ' + modelName(c.model) : null].filter(Boolean).join(' · ')),
+        c.brief ? h('details', { class: 'cr-brief' }, h('summary', null, 'Prompt'), h('p', null, c.brief)) : null,
+        actions, editor));
+  }));
+}
+// Re-read creations every few seconds while one is being made.
+let createTimer = null;
+function scheduleCreatePoll() {
+  if (createTimer || !cfg().tok) return;
+  if (!state.creations.some(c => ACTIVE.includes(c.status) && creationAge(c) < 60 * 60 * 1000)) return;
+  createTimer = setTimeout(pollCreations, 8000);
+}
+async function pollCreations() {
+  createTimer = null;
+  if (document.visibilityState !== 'visible') { scheduleCreatePoll(); return }
+  try {
+    const before = new Map(state.creations.map(c => [c.id, c.status]));
+    state.creations = parseList(await raw(CREATIONS), 'creations', CREATIONS);
+    for (const c of state.creations) {
+      const was = before.get(c.id);
+      if (was && was !== c.status && c.status === 'done') msg(state.view === 'create' ? 'crMsg' : 'appMsg', 'ok', `Opus finished “${(c.ask || c.deity || 'your image').slice(0, 60)}”.`);
+      if (was && was !== c.status && c.status === 'error') msg(state.view === 'create' ? 'crMsg' : 'appMsg', 'err', 'Opus couldn’t make one of your images. See Create for why.');
+    }
+    if (state.view === 'create' && !state.cr.redraw) renderCreations();
+  } catch { /* try again next tick */ }
+  scheduleCreatePoll();
+}
+deityOptions($('awDeity'), 'None'); deityOptions($('crDeity'), 'As in the artwork');
+$('awFile').addEventListener('change', e => { stageArtworks([...e.target.files]); e.target.value = '' });
+$('awSave').onclick = saveArtworks;
+$('awPaste').onclick = async () => {
+  try {
+    const files = [];
+    for (const item of await navigator.clipboard.read()) {
+      const t = item.types.find(x => /^image\/(png|jpeg|webp|gif)$/.test(x));
+      if (t) files.push(new File([await item.getType(t)], 'artwork.' + t.split('/')[1], { type: t }));
+    }
+    if (files.length) stageArtworks(files); else msg('awMsg', 'err', 'The clipboard has no image. Copy one first, or tap Choose images.');
+  } catch { msg('awMsg', 'err', 'Your browser didn’t allow reading the clipboard. Tap Choose images instead.') }
+};
+const awDrop = $('awDrop');
+awDrop.addEventListener('dragover', e => { e.preventDefault(); awDrop.classList.add('over') });
+awDrop.addEventListener('dragleave', () => awDrop.classList.remove('over'));
+awDrop.addEventListener('drop', e => { e.preventDefault(); awDrop.classList.remove('over'); stageArtworks([...(e.dataTransfer?.files || [])].filter(f => f.type.startsWith('image/'))) });
+for (const btn of document.querySelectorAll('.segmented.fmt button')) btn.addEventListener('click', () => { state.cr.format = btn.dataset.fmt; renderCreate() });
+$('crGo').onclick = createWithOpus;
+
 // ── Setup and navigation ────────────────────────────────────────────────
 function boot() {
   const c = cfg(), on = !!c.tok;
   $('repo').value = c.repo; $('branch').value = c.branch;
   $('setup').classList.toggle('hide', on);
-  for (const id of ['topActions', 'foot']) $(id).classList.toggle('hide', !on);
+  for (const id of ['topActions', 'foot', 'mjLink']) $(id).classList.toggle('hide', !on);
   applyView();
   $('repoLbl').textContent = on ? `${c.repo} · ${c.branch}` : '';
   render();
