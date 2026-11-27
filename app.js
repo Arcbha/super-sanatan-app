@@ -9,6 +9,8 @@ const PLANS = 'planner/plans.json', PANCHANG = 'data/panchang_2026.json', REFS =
 const BOOKMARKS = 'planner/bookmarks.json', BM_DIR = 'planner/bookmarks';
 const ARTWORKS = 'planner/artworks.json', AW_DIR = 'planner/artworks', CREATIONS = 'planner/creations.json', CREATE_REQ = 'planner/create-requests', CR_DIR = 'planner/creations';
 const QUOTES = 'planner/quotes.json', QT_DIR = 'planner/quotes';
+const ACCOUNTS_FILE = 'planner/claude-accounts.json';
+const ACCOUNT_ORDER = [['google', 'Account Google'], ['outlook', 'Account Outlook']];   // first in sequence = Account Google
 const ACTIVE = ['queued', 'writing', 'briefing', 'drawing'];
 const MAX_CR_IMAGES = 6;
 const POLL_MS = 7000, AI_SLOW_MS = 4 * 60 * 1000, AI_GIVE_UP_MS = 15 * 60 * 1000;
@@ -254,7 +256,7 @@ function aiState(p) {
     return { kind: age > AI_GIVE_UP_MS ? 'stuck' : 'queued', slow: age > AI_SLOW_MS };
   }
   if (a.status === 'error') return { kind: 'error', error: String(a.error || 'Unknown error') };
-  if (a.status === 'done' && typeof a.text === 'string' && a.text.trim()) return { kind: 'done', text: a.text.trim(), suggestion: a.text.trim() !== String(p.mjPrompt || '').trim() };
+  if (a.status === 'done' && typeof a.text === 'string' && a.text.trim()) return { kind: 'done', text: a.text.trim(), suggestion: a.text.trim() !== String(p.mjPrompt || '').trim(), account: typeof a.account === 'string' ? a.account : '' };
   return { kind: 'none' };
 }
 
@@ -293,7 +295,8 @@ function reconnect() { store.del(K.tok); state.plans = []; state.loaded = false;
 async function loadAll(first) {
   msg('appMsg', '', first ? 'Loading from GitHub…' : '');
   try {
-    const [pan, plans, bms, aws, crs, qts] = await Promise.all([state.panchang ? null : raw(PANCHANG), raw(PLANS), raw(BOOKMARKS), raw(ARTWORKS), raw(CREATIONS), raw(QUOTES)]);
+    const [pan, plans, bms, aws, crs, qts, acc] = await Promise.all([state.panchang ? null : raw(PANCHANG), raw(PLANS), raw(BOOKMARKS), raw(ARTWORKS), raw(CREATIONS), raw(QUOTES), raw(ACCOUNTS_FILE).catch(() => null)]);
+    state.accounts = parseAccounts(acc);
     state.quotes = parseList(qts, 'quotes', QUOTES);
     state.bookmarks = parseList(bms, 'bookmarks', BOOKMARKS);
     state.artworks = parseList(aws, 'artworks', ARTWORKS);
@@ -340,6 +343,7 @@ async function poll() {
     const plans = parsePlans(await raw(PLANS));
     if (state.editing || state.saving) { schedulePoll(); return }
     state.plans = plans;
+    raw(ACCOUNTS_FILE).then(t => { state.accounts = parseAccounts(t) }).catch(() => {});
     for (const p of plans) {
       const k = aiState(p).kind;
       if (before.get(p.id) === 'queued' && k === 'done') msg('appMsg', 'ok', `Claude wrote the Midjourney prompt for “${p.title}”.`);
@@ -636,7 +640,7 @@ function aiPanel(getForm, sync) {   // the form is still being built when this r
         busy ? h('span', { class: 'spinner', 'aria-hidden': 'true' }) : icon(SPARK), busy ? 'Writing…' : a.kind === 'done' ? 'Write again' : 'Write with Claude')));
   if (a.kind === 'done' && a.suggestion) {
     box.append(h('div', { class: 'ai-result' },
-      h('div', { class: 'ai-result-label' }, 'Claude’s prompt'),
+      h('div', { class: 'ai-result-label' }, 'Claude’s prompt' + (a.account ? ' · ' + a.account : '')),
       h('p', { class: 'ai-result-text' }, a.text),
       h('div', { class: 'ai-actions' },
         h('button', { type: 'button', class: 'btn primary sm', onclick: () => { const ta = getForm().querySelector('textarea[name=mjPrompt]'); ta.value = a.text; d.mjPrompt = a.text; box.querySelector('.ai-result')?.remove() } }, 'Use this prompt'),
@@ -1163,7 +1167,31 @@ function crThumbs(c) {
   for (const path of paths.slice(0, MAX_CR_IMAGES)) refSrc(path).then(u => { if (u) refs.append(h('img', { src: u, alt: 'Reference work' })) });
   return paths.length ? refs : null;
 }
+function parseAccounts(txt) {
+  try { const d = JSON.parse(txt || 'null'); return d && typeof d.accounts === 'object' && d.accounts ? d.accounts : {} } catch { return {} }
+}
+const istTime = iso => { try { return new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit', day: 'numeric', month: 'short' }).format(new Date(iso)) } catch { return '' } };
+function renderAccounts() {
+  const box = $('acctList');
+  if (!box) return;
+  const acc = state.accounts || {};
+  box.replaceChildren(...ACCOUNT_ORDER.map(([key, name], i) => {
+    const a = acc[key] || {};
+    let status = a.status || 'unknown';
+    const until = a.limitedUntil ? Date.parse(a.limitedUntil) : 0;
+    if (status === 'limited' && until && until < Date.now()) status = 'ok';     // its limit has reset since
+    const label = { ok: 'Ready', limited: 'Limited', signin: 'Sign-in problem', missing: 'Not set up', unknown: 'Not used yet' }[status] || 'Not used yet';
+    const sub = status === 'limited' ? `Usage limit reached · back ${a.resetText ? a.resetText : 'around ' + istTime(a.limitedUntil)}. Jobs use the other account meanwhile.`
+      : status === 'signin' ? 'Its token is missing, wrong or expired. Run claude setup-token for this account and update the secret.'
+      : status === 'missing' ? (key === 'google' ? 'Save its claude setup-token as CLAUDE_CODE_OAUTH_TOKEN in Content-distribution.' : 'Save its token as ANTHROPIC_API_KEY_2 in Content-distribution.')
+      : a.lastUsedAt ? 'Last used ' + istTime(a.lastUsedAt) : i === 0 ? 'Used first for every job.' : 'Takes over when Account Google is limited.';
+    return h('li', { class: i === 0 ? 'first' : '' }, h('span', { class: 'acct-num' }, String(i + 1)),
+      h('div', null, h('div', { class: 'acct-name' }, name), h('div', { class: 'acct-sub' }, sub)),
+      h('span', { class: `badge ${status === 'unknown' ? 'unknown' : status}` }, label));
+  }));
+}
 function renderCreations() {
+  renderAccounts();
   if (!state.loaded) { $('crList').replaceChildren(); return }
   if (!state.creations.length) { $('crList').replaceChildren(h('div', { class: 'empty' }, 'No prompts yet. Add reference work above, say what you want and tap Get Midjourney prompt.')); return }
   $('crList').replaceChildren(...state.creations.map(c => {
@@ -1173,7 +1201,7 @@ function renderCreations() {
     const d = istDate(c.createdAt);
     body.append(...[crThumbs(c),
       h('div', { class: 'cr-ask' }, c.ask || texts[0] || c.deity || 'From reference work'),
-      h('div', { class: 'cr-meta' }, [c.deity, FORMAT_LABEL[c.format], c.date ? 'for ' + shortDate(c.date) : null, d ? shortDate(d) : null, c.status === 'done' && c.model ? 'by ' + modelName(c.model) : null].filter(Boolean).join(' · '))].filter(Boolean));
+      h('div', { class: 'cr-meta' }, [c.deity, FORMAT_LABEL[c.format], c.date ? 'for ' + shortDate(c.date) : null, d ? shortDate(d) : null, c.status === 'done' && c.model ? 'by ' + modelName(c.model) : null, c.status === 'done' && typeof c.account === 'string' && c.account ? c.account : null].filter(Boolean).join(' · '))].filter(Boolean));
     if (texts.length && c.ask) body.append(h('div', { class: 'cr-meta' }, 'Notes: ' + texts.join(' · ')));
     if (active && !stuck) body.append(h('div', { class: 'cr-status' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), h('span', null, c.status === 'queued' ? 'Waiting for Claude…' : c.mjPrompt ? 'Claude is revising the prompt…' : 'Claude is writing the Midjourney prompt…')));
     else if (stuck) body.append(h('div', { class: 'msg err' }, 'This is taking much longer than usual. In Content-distribution, open Actions → “Planner — Midjourney prompt maker” to see why, or tap Try again.'));
@@ -1214,6 +1242,7 @@ async function pollCreations() {
   try {
     const before = new Map(state.creations.map(c => [c.id, c.status]));
     state.creations = parseList(await raw(CREATIONS), 'creations', CREATIONS);
+    state.accounts = parseAccounts(await raw(ACCOUNTS_FILE).catch(() => null));
     for (const c of state.creations) {
       const was = before.get(c.id);
       if (was && was !== c.status && c.status === 'done') msg(state.view === 'create' ? 'crMsg' : 'appMsg', 'ok', `Midjourney prompt ready: “${(c.ask || c.deity || 'your reference work').slice(0, 60)}”.`);

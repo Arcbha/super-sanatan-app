@@ -24,7 +24,7 @@
   --shadow: 0 0 0 1px rgba(13,18,34,.05), 0 1px 2px rgba(13,18,34,.04), 0 12px 28px rgba(13,18,34,.07);
   --shadow-sm: 0 0 0 1px rgba(13,18,34,.05), 0 1px 2px rgba(13,18,34,.05);
   --grad: linear-gradient(135deg, #f2b544 0%, #f0a43a 20%, #ed9430 40%, #e98327 60%, #e5741f 80%, #e26b1f 100%);
-  --grad-text: linear-gradient(135deg, #b8820f 0%, #bd720f 35%, #c06210 70%, #bd5312 100%);
+  --grad-brand: linear-gradient(135deg, #f6c445 0%, #f9b934 18%, #ffb12a 36%, #ff9c1f 54%, #ff8616 72%, #f76c0f 100%);
   --on-grad: #3a1a00; --accent: #e8730c; --accent-ink: #b45309; --accent-soft: #fff4e2; --accent-ring: rgba(247,140,20,.28);
   --red: #e5352b; --red-soft: #fdeceb; --amber: #b7791f; --amber-soft: #fff6e0; --green: #1f9d6b; --green-soft: #e7f6ef;
   --indigo: #5146d8; --indigo-soft: #eeedfc; --yellow: #a16207; --yellow-soft: #fef7d6;
@@ -54,7 +54,7 @@ a { color: var(--accent-ink); }
 .logo-tile { width: 44px; height: 44px; border-radius: 13px; flex: none; overflow: hidden; background: var(--grad); box-shadow: 0 6px 16px rgba(247,120,15,.35); display: block; }
 .logo-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .brand-name { font-size: 24px; font-weight: 700; letter-spacing: -.025em; white-space: nowrap; }
-.brand-name span { background: var(--grad-text); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.brand-name span { background: var(--grad-brand); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .who { font-size: 14px; color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 @media (max-width: 380px) { .brand-name { font-size: 21px; } }
 
@@ -381,6 +381,20 @@ form.plan-form { display: flex; flex-direction: column; min-height: 0; flex: 1; 
 .cr-actions .btn.danger { margin-left: auto; height: 30px; font-size: 13px; }
 .cr-redraw { display: flex; flex-direction: column; gap: 8px; }
 .cr-redraw textarea { width: 100%; min-height: 150px; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; font-size: 14px; line-height: 1.45; resize: vertical; }
+
+/* Claude accounts */
+.acct-card { padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+.acct-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; justify-content: space-between; }
+.acct-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.acct-list li { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 10px; align-items: center; background: #fff; border-radius: 14px; padding: 10px 12px; box-shadow: var(--shadow-sm); }
+.acct-num { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 13px; background: var(--subtle); color: var(--ink); }
+.acct-list li.first .acct-num { background: var(--grad); color: var(--on-grad); }
+.acct-name { font-weight: 600; }
+.acct-sub { font-size: 12.5px; color: var(--sub); overflow-wrap: anywhere; }
+.badge.ok { background: var(--green-soft); color: var(--green); }
+.badge.limited { background: var(--amber-soft); color: var(--amber); }
+.badge.signin { background: var(--red-soft); color: var(--red); }
+.badge.missing, .badge.unknown { background: var(--subtle); color: var(--sub); }
 </style>
 </head>
 <body>
@@ -503,6 +517,10 @@ form.plan-form { display: flex; flex-direction: column; min-height: 0; flex: 1; 
         <div class="quiet">Claude studies your reference work and writes a prompt to paste into Midjourney, plus two alternatives. Usually under a minute; you can leave this page.</div>
         <div class="msg" id="crMsg" role="status" hidden></div>
       </div>
+      <section class="card acct-card" aria-labelledby="acctTitle">
+        <div class="acct-head"><h2 class="sub-title" id="acctTitle" style="margin:0">Claude accounts</h2><span class="quiet">Used in this order; switches automatically when one is limited.</span></div>
+        <ol class="acct-list" id="acctList"></ol>
+      </section>
       <h2 class="sub-title">Your prompts</h2>
       <div class="cr-list" id="crList"></div>
     </section>

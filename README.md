@@ -52,3 +52,8 @@ Each card has **Copy** and **Copy & open Midjourney ↗** for every prompt, a no
 ## Quotes
 
 Quote-based inspiration you want to keep (top bar → **Quotes**, or `#quotes`): the quote in any script, plus optional translation, source, deity, tags, link, note and a screenshot (pick one or paste it on the page). Search across everything, tap a tag to filter, **Copy** copies quote + translation + source, **Mark used** once posted (and **Hide used**). Never sent to Claude. Stored as `planner/quotes.json` + `planner/quotes/`.
+
+## Claude accounts
+
+Write with Claude and Create run on two Claude accounts, in order: **Account Google** first, then **Account Outlook**. If one is rate-limited, out of usage or can't sign in, the job switches to the other straight away, and a limited account waits at the back until its limit resets. The **Claude accounts** card on Create shows each account as Ready, Limited (and when it's back), Sign-in problem or Not set up; finished prompts show which account wrote them. Set up in Content-distribution: `tasks/claude_accounts.py`, secrets `CLAUDE_CODE_OAUTH_TOKEN` (Google) and `ANTHROPIC_API_KEY_2` (Outlook).
+
