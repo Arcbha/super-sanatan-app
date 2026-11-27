@@ -30,3 +30,8 @@ A plain shelf for artform videos and posts you want to remember (top bar → **B
 - Tracking bits are removed from links (`igsh`, `utm_…`, `si`, …); a link already saved is refused with the date it was saved.
 - Cards show the screenshot, or the YouTube thumbnail, or the site name; **Open ↗**, **Copy link**, **Delete** (tap twice). Search filters by note, link and site.
 - Stored in Content-distribution as `planner/bookmarks.json` + screenshots in `planner/bookmarks/` (format in `planner/README.md`).
+
+## If it won't connect
+
+When connecting (or opening) fails, the app checks GitHub step by step and shows which step broke, with the fix: token not accepted (mistyped, expired or revoked), token can't see Content-distribution, token can read but not write (needs Contents: Read and write), branch not found, or no network. **Reconnect with a new token** appears on the banner if a saved token stops working. If the browser won't keep the token (private/incognito window or an in-app browser), the setup screen says so.
+
