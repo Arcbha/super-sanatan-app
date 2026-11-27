@@ -7,8 +7,10 @@ const API = 'https://api.github.com';
 const K = { tok: 'ss.token', repo: 'ss.repo', branch: 'ss.branch', share: 'ss.share' };
 const PLANS = 'planner/plans.json', PANCHANG = 'data/panchang_2026.json', REFS = 'planner/refs', REQUESTS = 'planner/requests';
 const BOOKMARKS = 'planner/bookmarks.json', BM_DIR = 'planner/bookmarks';
-const ARTWORKS = 'planner/artworks.json', AW_DIR = 'planner/artworks', CREATIONS = 'planner/creations.json', CREATE_REQ = 'planner/create-requests';
-const ACTIVE = ['queued', 'briefing', 'drawing'];
+const ARTWORKS = 'planner/artworks.json', AW_DIR = 'planner/artworks', CREATIONS = 'planner/creations.json', CREATE_REQ = 'planner/create-requests', CR_DIR = 'planner/creations';
+const QUOTES = 'planner/quotes.json', QT_DIR = 'planner/quotes';
+const ACTIVE = ['queued', 'writing', 'briefing', 'drawing'];
+const MAX_CR_IMAGES = 6;
 const POLL_MS = 7000, AI_SLOW_MS = 4 * 60 * 1000, AI_GIVE_UP_MS = 15 * 60 * 1000;
 const MAX_FILE = 50 * 1024 * 1024, MAX_SIDE = 2000, JPEG_Q = 0.88, MAX_REFS = 16;
 
@@ -238,7 +240,8 @@ const state = {
   today: istToday(), start: istToday(), panchang: null, plans: [], loaded: false,
   editing: null, draft: null, removed: new Set(), saving: false, progress: 0, formError: '', notice: '',
   view: 'calendar', bookmarks: [], bm: { file: null, preview: null, saving: false },
-  artworks: [], aw: { files: [], saving: false }, creations: [], cr: { picked: [], format: '4:5', saving: false, redraw: null },
+  artworks: [], aw: { files: [], saving: false }, creations: [], cr: { picked: [], files: [], format: '4:5', saving: false, revise: null },
+  quotes: [], qt: { file: null, preview: null, saving: false },
 };
 const cleanRefs = refs => (Array.isArray(refs) ? refs : []).filter(r => r && ((r.type === 'text' && typeof r.text === 'string' && r.text.trim()) || (['image', 'video', 'pdf'].includes(r.type) && typeof r.path === 'string' && r.path.startsWith(REFS + '/'))));
 const kindLabel = k => (KINDS.find(x => x[0] === k) || [null, 'Item'])[1];
@@ -290,7 +293,8 @@ function reconnect() { store.del(K.tok); state.plans = []; state.loaded = false;
 async function loadAll(first) {
   msg('appMsg', '', first ? 'Loading from GitHub…' : '');
   try {
-    const [pan, plans, bms, aws, crs] = await Promise.all([state.panchang ? null : raw(PANCHANG), raw(PLANS), raw(BOOKMARKS), raw(ARTWORKS), raw(CREATIONS)]);
+    const [pan, plans, bms, aws, crs, qts] = await Promise.all([state.panchang ? null : raw(PANCHANG), raw(PLANS), raw(BOOKMARKS), raw(ARTWORKS), raw(CREATIONS), raw(QUOTES)]);
+    state.quotes = parseList(qts, 'quotes', QUOTES);
     state.bookmarks = parseList(bms, 'bookmarks', BOOKMARKS);
     state.artworks = parseList(aws, 'artworks', ARTWORKS);
     state.creations = parseList(crs, 'creations', CREATIONS);
@@ -315,6 +319,7 @@ async function loadAll(first) {
   if (state.view === 'bookmarks') renderBookmarks();
   if (state.view === 'artwork') renderArtworks();
   if (state.view === 'create') renderCreate();
+  if (state.view === 'quotes') renderQuotes();
   scheduleCreatePoll();
   takeShared();
   schedulePoll();
@@ -910,16 +915,18 @@ function bmCard(b) {
 function applyView() {
   const on = !!cfg().tok;
   const h = location.hash.replace('#', '');
-  state.view = ['create', 'artwork', 'bookmarks'].includes(h) ? h : 'calendar';
+  state.view = ['create', 'artwork', 'bookmarks', 'quotes'].includes(h) ? h : 'calendar';
   const show = v => on && state.view === v;
   for (const id of ['pageHead', 'stats', 'days', 'ahead']) $(id).classList.toggle('hide', !show('calendar'));
   $('createView').classList.toggle('hide', !show('create'));
   $('artworkView').classList.toggle('hide', !show('artwork'));
   $('bookmarksView').classList.toggle('hide', !show('bookmarks'));
-  for (const [id, v] of [['tabCalendar', 'calendar'], ['tabCreate', 'create'], ['tabArtwork', 'artwork'], ['tabBookmarks', 'bookmarks']]) { if (state.view === v) $(id).setAttribute('aria-current', 'page'); else $(id).removeAttribute('aria-current') }
+  $('quotesView').classList.toggle('hide', !show('quotes'));
+  for (const [id, v] of [['tabCalendar', 'calendar'], ['tabCreate', 'create'], ['tabArtwork', 'artwork'], ['tabBookmarks', 'bookmarks'], ['tabQuotes', 'quotes']]) { if (state.view === v) $(id).setAttribute('aria-current', 'page'); else $(id).removeAttribute('aria-current') }
   if (show('bookmarks')) renderBookmarks();
   if (show('artwork')) renderArtworks();
   if (show('create')) renderCreate();
+  if (show('quotes')) renderQuotes();
 }
 window.addEventListener('hashchange', () => { if (state.editing && !state.saving) closeEditor(); applyView(); window.scrollTo(0, 0) });
 $('bmSave').onclick = saveBookmark;
@@ -952,9 +959,9 @@ drop.addEventListener('drop', e => {
 });
 // Paste a screenshot (or a link) anywhere on the Bookmarks page.
 document.addEventListener('paste', e => {
-  if (state.view === 'artwork' && !state.editing && cfg().tok) {
+  if (['artwork', 'create', 'quotes'].includes(state.view) && !state.editing && cfg().tok) {
     const imgs = [...(e.clipboardData?.files || [])].filter(x => x.type.startsWith('image/'));
-    if (imgs.length) { e.preventDefault(); stageArtworks(imgs) }
+    if (imgs.length) { e.preventDefault(); if (state.view === 'artwork') stageArtworks(imgs); else if (state.view === 'create') stageCreateRefs(imgs); else stageQuoteShot(imgs[0]) }
     return;
   }
   if (state.view !== 'bookmarks' || state.editing || !cfg().tok) return;
@@ -1044,123 +1051,162 @@ function renderArtworks() {
         a.note ? h('div', { class: 'art-meta' }, a.note) : null,
         h('div', { class: 'art-meta' }, [d ? shortDate(d) : null, url ? sourceOf(url) : null].filter(Boolean).join(' · ')),
         h('div', { class: 'art-actions' },
-          h('button', { type: 'button', class: 'mini go', onclick: () => { state.cr.picked = [a.id]; if (a.deity) $('crDeity').value = a.deity; location.hash = '#create' } }, 'Create from this'),
+          h('button', { type: 'button', class: 'mini go', onclick: () => { state.cr.picked = [a.id]; if (a.deity) $('crDeity').value = a.deity; location.hash = '#create' } }, 'Get MJ prompt'),
           url ? h('a', { class: 'mini', href: url, target: '_blank', rel: 'noopener noreferrer' }, 'Source ↗') : null,
           h('button', { type: 'button', class: 'btn danger', onclick: e => { if (armTap(e.currentTarget, 'Tap again')) deleteArtwork(a) } }, 'Delete'))));
   }));
 }
 
-// ── Create: artwork + ask → Opus writes the prompt, then draws the image ─
-const FORMAT_LABEL = { '4:5': 'Post 4:5', '1:1': 'Square 1:1', '9:16': 'Story 9:16' };
-const ASPECT = { '4:5': '4 / 5', '1:1': '1 / 1', '9:16': '9 / 16' };
+// ── Create: reference work + ask → Claude writes a Midjourney prompt (images are made in Midjourney) ─
+const FORMAT_LABEL = { '4:5': 'Post 4:5', '1:1': 'Square 1:1', '9:16': 'Story 9:16', '16:9': 'Wide 16:9' };
+const MJ_IMAGINE = 'https://www.midjourney.com/imagine';
+function stageCreateRefs(files) {
+  const cr = state.cr;
+  const ok = files.filter(f => /^image\/(png|jpeg|webp|gif)$/.test(f.type) && f.size <= MAX_FILE);
+  if (ok.length < files.length) msg('crMsg', 'err', 'Some files were skipped: use PNG, JPEG, WebP or GIF under 50 MB.'); else msg('crMsg', '', '');
+  const room = MAX_CR_IMAGES - cr.files.length - cr.picked.length;
+  if (ok.length > room) msg('crMsg', 'err', `Up to ${MAX_CR_IMAGES} images in all (uploads plus saved artwork).`);
+  for (const f of ok.slice(0, Math.max(0, room))) cr.files.push({ file: f, preview: URL.createObjectURL(f), note: '' });
+  renderCrStaged();
+}
+function renderCrStaged() {
+  const box = $('crStaged'), cr = state.cr;
+  box.replaceChildren(...cr.files.map((x, i) => h('div', { class: 'cr-ref' },
+    h('span', { class: 'thumb-wrap' }, h('img', { src: x.preview, alt: 'Reference work' }),
+      h('button', { type: 'button', class: 'x', 'aria-label': 'Remove this image', onclick: () => { URL.revokeObjectURL(x.preview); cr.files.splice(i, 1); renderCrStaged() } }, '×')),
+    h('input', { type: 'text', class: 'cr-ref-note', maxlength: '200', placeholder: 'What to take from it (optional)', 'aria-label': 'What to take from this image', value: x.note, oninput: e => { x.note = e.target.value } }))));
+  box.classList.toggle('hide', !cr.files.length);
+}
 function renderCreate() {
   const cr = state.cr;
   cr.picked = cr.picked.filter(id => state.artworks.some(a => a.id === id));
-  $('crPicked').textContent = cr.picked.length ? `${cr.picked.length} of 3 picked` : 'up to 3';
+  $('crPicked').textContent = cr.picked.length ? `${cr.picked.length} picked` : 'optional';
   if (!state.loaded) $('crPick').replaceChildren(h('div', { class: 'pick-empty' }, 'Loading…'));
-  else if (!state.artworks.length) $('crPick').replaceChildren(h('div', { class: 'pick-empty' }, h('span', null, 'Save artwork first, then pick it here.'), h('a', { class: 'mini go', href: '#artwork' }, 'Add artwork')));
+  else if (!state.artworks.length) $('crPick').replaceChildren(h('div', { class: 'pick-empty' }, h('span', null, 'No saved artwork yet. That’s fine: upload reference work above.'), h('a', { class: 'mini', href: '#artwork' }, 'Artwork library')));
   else $('crPick').replaceChildren(...state.artworks.map(a => {
     const on = cr.picked.includes(a.id);
     const b = h('button', { type: 'button', class: 'pick', 'aria-pressed': String(on), 'aria-label': `${on ? 'Unpick' : 'Pick'} ${a.deity || a.title || 'artwork'}`,
       onclick: () => {
         if (on) cr.picked = cr.picked.filter(x => x !== a.id);
-        else if (cr.picked.length < 3) { cr.picked.push(a.id); if (a.deity && !$('crDeity').value) $('crDeity').value = a.deity }
-        else msg('crMsg', 'err', 'Pick up to 3 pieces of artwork.');
+        else if (cr.picked.length + cr.files.length < MAX_CR_IMAGES) { cr.picked.push(a.id); if (a.deity && !$('crDeity').value) $('crDeity').value = a.deity }
+        else msg('crMsg', 'err', `Up to ${MAX_CR_IMAGES} images in all (uploads plus saved artwork).`);
         renderCreate();
       } }, h('span', { class: 'tick', 'aria-hidden': 'true' }, on ? '✓' : ''));
     refSrc(a.image).then(u => { if (u) b.prepend(h('img', { src: u, alt: '' })) });
     return b;
   }));
   for (const btn of document.querySelectorAll('.segmented.fmt button')) btn.setAttribute('aria-pressed', String(btn.dataset.fmt === cr.format));
+  renderCrStaged();
   renderCreations();
 }
-async function createWithOpus() {
+const crRequest = (id, mode, now) => ({ path: `${CREATE_REQ}/${id}-${stamp()}.json`, b64: b64utf8(JSON.stringify({ creationId: id, mode, requestedAt: now }) + '\n') });
+async function askForPrompt() {
   const cr = state.cr;
   if (cr.saving) return;
-  if (!cr.picked.length) { msg('crMsg', 'err', 'Pick at least one piece of artwork to work from.'); return }
-  const ask = $('crAsk').value.trim(), deity = $('crDeity').value;
-  if (!ask && !deity) { msg('crMsg', 'err', 'Describe the image, or at least choose a deity.'); $('crAsk').focus(); return }
+  const ask = $('crAsk').value.trim(), deity = $('crDeity').value, text = $('crNotes').value.trim(), date = $('crDate').value;
+  if (!cr.files.length && !cr.picked.length && !text && !ask) { msg('crMsg', 'err', 'Add reference work (an image or a written note) or describe the image you want.'); return }
+  if (!ask && !deity && !cr.files.length && !cr.picked.length) { msg('crMsg', 'err', 'Describe the image, or at least choose a deity.'); $('crAsk').focus(); return }
   const id = 'cr' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), now = new Date().toISOString();
-  const entry = { id, artworkIds: [...cr.picked], ...(deity ? { deity } : {}), ask, format: cr.format, textSpace: $('crText').checked, status: 'queued', requestedAt: now, createdAt: now };
-  cr.saving = true; $('crGo').disabled = true; $('crGo').textContent = 'Sending to Opus…';
+  cr.saving = true; $('crGo').disabled = true; $('crGo').textContent = 'Sending…';
   try {
-    await saveDoc(CREATIONS, 'creations', list => [entry, ...list], `planner: create ${deity || 'image'} — ${(ask || '').slice(0, 50)}`,
-      [{ path: `${CREATE_REQ}/${id}-${stamp()}.json`, b64: b64utf8(JSON.stringify({ creationId: id, mode: 'full', requestedAt: now }) + '\n') }]);
-    $('crAsk').value = ''; cr.picked = [];
-    msg('crMsg', 'ok', 'Sent. Opus is writing the prompt, then it will draw the image. Watch it below; it takes a few minutes.');
+    const files = [], refs = [];
+    for (const x of cr.files) {
+      const f = await shrinkImage(x.file);
+      const ext = (REF_TYPES[f.type] || REF_TYPES[x.file.type])[1];
+      const path = `${CR_DIR}/${id}/refs/${stamp()}-${slugify(x.file.name.replace(/\.\w+$/, ''))}.${ext}`;
+      files.push({ path, b64: await fileB64(f) });
+      refs.push({ type: 'image', path, name: String(x.file.name || 'reference').slice(0, 120), ...(x.note.trim() ? { note: x.note.trim().slice(0, 200) } : {}) });
+    }
+    if (text) refs.push({ type: 'text', text });
+    const entry = { id, refs, ...(cr.picked.length ? { artworkIds: [...cr.picked] } : {}), ...(deity ? { deity } : {}), ...(isDate(date) ? { date } : {}), ask,
+      format: cr.format, textSpace: $('crText').checked, status: 'queued', files: files.map(f => f.path), requestedAt: now, createdAt: now };
+    await saveDoc(CREATIONS, 'creations', list => [entry, ...list], `planner: Midjourney prompt request ${deity || ''} — ${(ask || text || 'from reference work').slice(0, 50)}`,
+      [...files, crRequest(id, 'full', now)], p => { $('crGo').textContent = `Sending… ${Math.round(p * 100)}%` });
+    for (const x of cr.files) URL.revokeObjectURL(x.preview);
+    cr.files = []; cr.picked = []; $('crAsk').value = ''; $('crNotes').value = '';
+    msg('crMsg', 'ok', 'Sent. Claude is studying your reference work and writing the Midjourney prompt; usually under a minute. You can leave this page.');
     renderCreate(); scheduleCreatePoll();
   } catch (e) { msg('crMsg', 'err', e.message || 'Couldn’t send. Try again.') }
-  cr.saving = false; $('crGo').disabled = false; $('crGo').textContent = 'Create with Opus';
+  cr.saving = false; $('crGo').disabled = false; $('crGo').textContent = 'Get Midjourney prompt';
 }
-async function redraw(c, brief) {
+async function revisePrompt(c, feedback) {
   const now = new Date().toISOString();
+  const mode = c.mjPrompt ? 'revise' : 'full';
   try {
-    await saveDoc(CREATIONS, 'creations', list => list.map(x => x.id === c.id ? { ...x, brief, status: 'queued', error: '', requestedAt: now, updatedAt: now } : x),
-      `planner: redraw creation ${c.id}`, [{ path: `${CREATE_REQ}/${c.id}-${stamp()}.json`, b64: b64utf8(JSON.stringify({ creationId: c.id, mode: 'redraw', requestedAt: now }) + '\n') }]);
-    state.cr.redraw = null; msg('crMsg', 'ok', 'Redrawing with your prompt. It takes a few minutes.');
+    await saveDoc(CREATIONS, 'creations', list => list.map(x => x.id === c.id ? { ...x, ...(feedback ? { feedback } : {}), status: 'queued', error: '', requestedAt: now, updatedAt: now } : x),
+      `planner: ${mode === 'revise' ? 'revise' : 'retry'} Midjourney prompt ${c.id}`, [crRequest(c.id, mode, now)]);
+    state.cr.revise = null; msg('crMsg', 'ok', mode === 'revise' ? 'Claude is revising the prompt with your feedback.' : 'Asked Claude again.');
     scheduleCreatePoll();
   } catch (e) { msg('crMsg', 'err', e.message) }
   renderCreations();
 }
 async function deleteCreation(c) {
   try {
-    const files = (Array.isArray(c.files) ? c.files : []).filter(p => typeof p === 'string' && p.startsWith(`planner/creations/${c.id}/`)).map(path => ({ path, del: true }));
+    const files = (Array.isArray(c.files) ? c.files : []).filter(p => typeof p === 'string' && p.startsWith(`${CR_DIR}/${c.id}/`)).map(path => ({ path, del: true }));
     await saveDoc(CREATIONS, 'creations', list => list.filter(x => x.id !== c.id), `planner: delete creation ${c.id}`, files);
-    msg('crMsg', 'ok', 'Creation deleted.');
+    msg('crMsg', 'ok', 'Deleted.');
   } catch (e) { msg('crMsg', 'err', e.message) }
   renderCreations();
 }
 const modelName = m => String(m).replace(/^claude-/, '').replace(/-(\d+)-(\d+)$/, ' $1.$2').replace(/^\w/, x => x.toUpperCase());
 function creationAge(c) { return Date.now() - Date.parse(c.requestedAt || c.createdAt || 0) }
+function promptBox(text, label, box) {
+  return h('div', { class: 'mj-box' }, label ? h('div', { class: 'mj-label' }, label) : null, h('p', { class: 'mj-text-p' }, text),
+    h('div', { class: 'mj-row' },
+      h('button', { type: 'button', class: 'mini go', onclick: e => copyText(e.currentTarget, text, box, 'Copy') }, 'Copy'),
+      h('a', { class: 'mini', href: MJ_IMAGINE, target: '_blank', rel: 'noopener noreferrer', onclick: () => { try { navigator.clipboard.writeText(text) } catch {} } }, 'Copy & open Midjourney ↗')));
+}
+function crThumbs(c) {
+  const refs = h('div', { class: 'cr-thumbs' });
+  const paths = (c.refs || []).filter(r => r && r.type === 'image' && typeof r.path === 'string').map(r => r.path);
+  for (const aid of c.artworkIds || []) { const a = state.artworks.find(x => x.id === aid); if (a && a.image) paths.push(a.image) }
+  for (const path of paths.slice(0, MAX_CR_IMAGES)) refSrc(path).then(u => { if (u) refs.append(h('img', { src: u, alt: 'Reference work' })) });
+  return paths.length ? refs : null;
+}
 function renderCreations() {
   if (!state.loaded) { $('crList').replaceChildren(); return }
-  if (!state.creations.length) { $('crList').replaceChildren(h('div', { class: 'empty' }, 'Nothing created yet. Pick artwork above, describe what you want and tap Create with Opus.')); return }
+  if (!state.creations.length) { $('crList').replaceChildren(h('div', { class: 'empty' }, 'No prompts yet. Add reference work above, say what you want and tap Get Midjourney prompt.')); return }
   $('crList').replaceChildren(...state.creations.map(c => {
-    const active = ACTIVE.includes(c.status), stuck = active && creationAge(c) > 45 * 60 * 1000;
-    const img = h('div', { class: 'cr-img', style: `aspect-ratio:${ASPECT[c.format] || '4 / 5'}` });
-    if (c.status === 'done' && c.image) {
-      img.textContent = '…';
-      refSrc(c.image, c.doneAt || c.updatedAt).then(u => img.replaceChildren(u ? h('img', { src: u, alt: c.caption || c.ask || 'Created image' }) : 'Image missing'));
-    } else {
-      const text = stuck ? 'This is taking much longer than usual. In Content-distribution, open Actions → “Planner — Opus image creator” to see why, or delete it and try again.'
-        : c.status === 'error' ? `Opus couldn’t make this image: ${c.error || 'unknown error'}`
-        : c.status === 'drawing' ? 'Opus is drawing the image… a few minutes'
-        : 'Opus is writing the prompt…';
-      img.append(h('div', { class: 'cr-status' }, active && !stuck ? h('span', { class: 'spinner', 'aria-hidden': 'true' }) : null, h('span', null, text)));
-      const refs = h('div', { class: 'cr-refs' });
-      for (const aid of (c.artworkIds || []).slice(0, 3)) { const a = state.artworks.find(x => x.id === aid); if (a) refSrc(a.image).then(u => { if (u) refs.append(h('img', { src: u, alt: '' })) }) }
-      img.append(refs);
-    }
+    const active = ACTIVE.includes(c.status), stuck = active && creationAge(c) > 20 * 60 * 1000;
+    const body = h('div', { class: 'cr-body' });
+    const texts = (c.refs || []).filter(r => r && r.type === 'text').map(r => r.text);
     const d = istDate(c.createdAt);
+    body.append(...[crThumbs(c),
+      h('div', { class: 'cr-ask' }, c.ask || texts[0] || c.deity || 'From reference work'),
+      h('div', { class: 'cr-meta' }, [c.deity, FORMAT_LABEL[c.format], c.date ? 'for ' + shortDate(c.date) : null, d ? shortDate(d) : null, c.status === 'done' && c.model ? 'by ' + modelName(c.model) : null].filter(Boolean).join(' · '))].filter(Boolean));
+    if (texts.length && c.ask) body.append(h('div', { class: 'cr-meta' }, 'Notes: ' + texts.join(' · ')));
+    if (active && !stuck) body.append(h('div', { class: 'cr-status' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), h('span', null, c.status === 'queued' ? 'Waiting for Claude…' : c.mjPrompt ? 'Claude is revising the prompt…' : 'Claude is writing the Midjourney prompt…')));
+    else if (stuck) body.append(h('div', { class: 'msg err' }, 'This is taking much longer than usual. In Content-distribution, open Actions → “Planner — Midjourney prompt maker” to see why, or tap Try again.'));
+    else if (c.status === 'error') body.append(h('div', { class: 'msg err' }, `Claude couldn’t write this prompt: ${c.error || 'unknown error'}`));
     const actions = h('div', { class: 'cr-actions' });
-    if (c.status === 'done' && c.image) {
-      actions.append(
-        h('button', { type: 'button', class: 'mini go', onclick: async () => { const u = await refSrc(c.image, c.doneAt || c.updatedAt); if (u) window.open(u, '_blank') } }, 'Open'),
-        h('button', { type: 'button', class: 'mini', onclick: async e => { const u = await refSrc(c.image, c.doneAt || c.updatedAt); if (!u) return; const a = h('a', { href: u, download: `super-sanatan-${(c.deity || 'image').toLowerCase()}-${c.id}.png` }); document.body.append(a); a.click(); a.remove() } }, 'Download'));
+    if (c.mjPrompt) {
+      body.append(promptBox(c.mjPrompt, 'Midjourney prompt', actions));
+      if (c.why) body.append(h('div', { class: 'cr-why' }, c.why));
+      if (Array.isArray(c.alternatives) && c.alternatives.length)
+        body.append(h('details', { class: 'cr-brief' }, h('summary', null, `${c.alternatives.length} alternative${c.alternatives.length > 1 ? 's' : ''}`),
+          ...c.alternatives.map((t, i) => promptBox(t, i === 0 ? 'Close to the inspiration' : 'Bolder', actions))));
+      if (Array.isArray(c.history) && c.history.length)
+        body.append(h('details', { class: 'cr-brief' }, h('summary', null, `Earlier prompts (${c.history.length})`),
+          ...c.history.map(x => h('div', null, x.feedback ? h('div', { class: 'cr-meta' }, 'Changed after: ' + x.feedback) : null, promptBox(String(x.mjPrompt || ''), '', actions)))));
     }
-    if (c.brief) actions.append(h('button', { type: 'button', class: 'mini', onclick: e => copyText(e.currentTarget, c.brief, actions, 'Copy prompt') }, 'Copy prompt'));
-    if (!active || stuck) actions.append(h('button', { type: 'button', class: 'mini', onclick: () => { state.cr.redraw = state.cr.redraw === c.id ? null : c.id; renderCreations() } }, c.status === 'error' ? 'Try again' : 'Redraw'));
+    if (!active || stuck) actions.append(h('button', { type: 'button', class: 'mini', onclick: () => { state.cr.revise = state.cr.revise === c.id ? null : c.id; renderCreations() } }, c.mjPrompt ? 'Revise' : 'Try again'));
     actions.append(h('button', { type: 'button', class: 'btn danger', onclick: e => { if (armTap(e.currentTarget, 'Tap again')) deleteCreation(c) } }, 'Delete'));
-    let editor = null;
-    if (state.cr.redraw === c.id) {
-      const ta = h('textarea', { 'aria-label': 'Prompt for the redraw', value: c.brief || '' });
-      editor = h('div', { class: 'cr-redraw' }, h('div', { class: 'quiet' }, c.brief ? 'Edit the prompt if you like, then redraw.' : 'Opus will write a new prompt from the artwork, then draw it.'), c.brief ? ta : null,
-        h('button', { type: 'button', class: 'btn primary', onclick: () => redraw(c, c.brief ? ta.value.trim() : '') }, c.brief ? 'Redraw with this prompt' : 'Try again'));
+    body.append(actions);
+    if (state.cr.revise === c.id) {
+      const ta = h('textarea', { 'aria-label': 'What to change', placeholder: 'What did Midjourney get wrong, or what should change? e.g. hands look off, more gold, plainer background' });
+      body.append(h('div', { class: 'cr-redraw' },
+        c.mjPrompt ? ta : h('div', { class: 'quiet' }, 'Claude will write the prompt again from your reference work.'),
+        h('button', { type: 'button', class: 'btn primary', onclick: () => { if (c.mjPrompt && !ta.value.trim()) { ta.focus(); return } revisePrompt(c, c.mjPrompt ? ta.value.trim().slice(0, 1000) : '') } }, c.mjPrompt ? 'Revise prompt' : 'Try again')));
     }
-    return h('article', { class: 'cr-card' }, img,
-      h('div', { class: 'cr-body' },
-        h('div', { class: 'cr-ask' }, c.ask || c.deity || 'Image'),
-        h('div', { class: 'cr-meta' }, [c.deity, FORMAT_LABEL[c.format], d ? shortDate(d) : null, c.status === 'done' && c.model ? 'by ' + modelName(c.model) : null].filter(Boolean).join(' · ')),
-        c.brief ? h('details', { class: 'cr-brief' }, h('summary', null, 'Prompt'), h('p', null, c.brief)) : null,
-        actions, editor));
+    return h('article', { class: 'cr-card' }, body);
   }));
 }
-// Re-read creations every few seconds while one is being made.
+// Re-read creations every few seconds while Claude is writing one.
 let createTimer = null;
 function scheduleCreatePoll() {
   if (createTimer || !cfg().tok) return;
-  if (!state.creations.some(c => ACTIVE.includes(c.status) && creationAge(c) < 60 * 60 * 1000)) return;
-  createTimer = setTimeout(pollCreations, 8000);
+  if (!state.creations.some(c => ACTIVE.includes(c.status) && creationAge(c) < 30 * 60 * 1000)) return;
+  createTimer = setTimeout(pollCreations, 6000);
 }
 async function pollCreations() {
   createTimer = null;
@@ -1170,14 +1216,99 @@ async function pollCreations() {
     state.creations = parseList(await raw(CREATIONS), 'creations', CREATIONS);
     for (const c of state.creations) {
       const was = before.get(c.id);
-      if (was && was !== c.status && c.status === 'done') msg(state.view === 'create' ? 'crMsg' : 'appMsg', 'ok', `Opus finished “${(c.ask || c.deity || 'your image').slice(0, 60)}”.`);
-      if (was && was !== c.status && c.status === 'error') msg(state.view === 'create' ? 'crMsg' : 'appMsg', 'err', 'Opus couldn’t make one of your images. See Create for why.');
+      if (was && was !== c.status && c.status === 'done') msg(state.view === 'create' ? 'crMsg' : 'appMsg', 'ok', `Midjourney prompt ready: “${(c.ask || c.deity || 'your reference work').slice(0, 60)}”.`);
+      if (was && was !== c.status && c.status === 'error') msg(state.view === 'create' ? 'crMsg' : 'appMsg', 'err', 'Claude couldn’t write one of your prompts. See Create for why.');
     }
-    if (state.view === 'create' && !state.cr.redraw) renderCreations();
+    if (state.view === 'create' && !state.cr.revise) renderCreations();
   } catch { /* try again next tick */ }
   scheduleCreatePoll();
 }
-deityOptions($('awDeity'), 'None'); deityOptions($('crDeity'), 'As in the artwork');
+
+// ── Quotes: quote-based inspiration (never sent to Claude) ──────────────
+function stageQuoteShot(file) {
+  const qt = state.qt;
+  if (!/^image\/(png|jpeg|webp|gif)$/.test(file.type) || file.size > MAX_FILE) { msg('qtMsg', 'err', 'Use a PNG, JPEG, WebP or GIF under 50 MB.'); return }
+  if (qt.preview) URL.revokeObjectURL(qt.preview);
+  qt.file = file; qt.preview = URL.createObjectURL(file);
+  renderQtShot();
+}
+function renderQtShot() {
+  const qt = state.qt, box = $('qtShot');
+  box.replaceChildren(...(qt.preview ? [h('span', { class: 'thumb-wrap' }, h('img', { src: qt.preview, alt: 'Screenshot of the quote' }),
+    h('button', { type: 'button', class: 'x', 'aria-label': 'Remove the screenshot', onclick: () => { URL.revokeObjectURL(qt.preview); qt.file = null; qt.preview = null; renderQtShot() } }, '×'))] : []));
+  box.classList.toggle('hide', !qt.preview);
+}
+async function saveQuote() {
+  const qt = state.qt;
+  if (qt.saving) return;
+  const text = $('qtText').value.trim();
+  if (!text) { msg('qtMsg', 'err', 'Type or paste the quote first.'); $('qtText').focus(); return }
+  const url = $('qtUrl').value.trim() ? cleanUrl(findUrl($('qtUrl').value)) : '';
+  if ($('qtUrl').value.trim() && !url) { msg('qtMsg', 'err', 'The link should start with https://'); return }
+  const norm = t => t.replace(/\s+/g, ' ').trim().toLowerCase();
+  const dupe = state.quotes.find(q => norm(q.text || '') === norm(text));
+  if (dupe) { msg('qtMsg', 'err', `That quote is already saved (${shortDate(istDate(dupe.createdAt))}).`); return }
+  const translation = $('qtTrans').value.trim(), source = $('qtSource').value.trim(), deity = $('qtDeity').value, note = $('qtNote').value.trim();
+  const tags = [...new Set($('qtTags').value.split(/[,#]/).map(t => t.trim().toLowerCase()).filter(Boolean))].slice(0, 12);
+  qt.saving = true; $('qtSave').disabled = true; $('qtSave').textContent = 'Saving…';
+  try {
+    const id = 'qt' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), now = new Date().toISOString(), files = [];
+    let image = '';
+    if (qt.file) {
+      const f = await shrinkImage(qt.file);
+      image = `${QT_DIR}/${id}.${(REF_TYPES[f.type] || REF_TYPES[qt.file.type])[1]}`;
+      files.push({ path: image, b64: await fileB64(f) });
+    }
+    const entry = { id, text: text.slice(0, 3000), ...(translation ? { translation: translation.slice(0, 2000) } : {}), ...(source ? { source: source.slice(0, 200) } : {}),
+      ...(deity ? { deity } : {}), ...(tags.length ? { tags } : {}), ...(url ? { url } : {}), ...(image ? { image } : {}), ...(note ? { note: note.slice(0, 300) } : {}), used: false, createdAt: now, updatedAt: now };
+    await saveDoc(QUOTES, 'quotes', list => [entry, ...list], `planner: save quote${source ? ' — ' + source.slice(0, 50) : ''}`, files);
+    for (const id of ['qtText', 'qtTrans', 'qtSource', 'qtTags', 'qtUrl', 'qtNote']) $(id).value = '';
+    if (qt.preview) URL.revokeObjectURL(qt.preview);
+    qt.file = null; qt.preview = null; renderQtShot();
+    msg('qtMsg', 'ok', 'Quote saved.');
+    renderQuotes();
+  } catch (e) { msg('qtMsg', 'err', e.message || 'Couldn’t save. Try again.') }
+  qt.saving = false; $('qtSave').disabled = false; $('qtSave').textContent = 'Save quote';
+}
+async function toggleUsed(q) {
+  try { await saveDoc(QUOTES, 'quotes', list => list.map(x => x.id === q.id ? { ...x, used: !x.used, updatedAt: new Date().toISOString() } : x), `planner: mark quote ${q.used ? 'unused' : 'used'}`) }
+  catch (e) { msg('qtMsg', 'err', e.message) }
+  renderQuotes();
+}
+async function deleteQuote(q) {
+  try {
+    await saveDoc(QUOTES, 'quotes', list => list.filter(x => x.id !== q.id), `planner: delete quote${q.source ? ' — ' + q.source.slice(0, 50) : ''}`, q.image ? [{ path: q.image, del: true }] : []);
+    msg('qtMsg', 'ok', 'Quote deleted.');
+  } catch (e) { msg('qtMsg', 'err', e.message) }
+  renderQuotes();
+}
+function renderQuotes() {
+  if (!state.loaded) { $('qtList').replaceChildren(); return }
+  const q = $('qtSearch').value.trim().toLowerCase(), hideUsed = $('qtHideUsed').checked;
+  const list = state.quotes.filter(x => (!hideUsed || !x.used) && (!q || [x.text, x.translation, x.source, x.deity, x.note, ...(x.tags || [])].some(v => String(v || '').toLowerCase().includes(q))));
+  $('qtCount').textContent = state.quotes.length ? `${state.quotes.length} saved` : '';
+  if (!list.length) { $('qtList').replaceChildren(h('div', { class: 'empty' }, state.quotes.length ? 'No quotes match.' : 'No quotes yet. Save the lines that inspire you above.')); return }
+  $('qtList').replaceChildren(...list.map(x => {
+    const url = safeUrl(x.url), d = istDate(x.createdAt);
+    const actions = h('div', { class: 'qt-actions' });
+    const copy = [x.text, x.translation, x.source ? '— ' + x.source : ''].filter(Boolean).join('\n');
+    actions.append(...[
+      h('button', { type: 'button', class: 'mini go', onclick: e => copyText(e.currentTarget, copy, actions, 'Copy') }, 'Copy'),
+      h('button', { type: 'button', class: 'mini', 'aria-pressed': String(!!x.used), onclick: () => toggleUsed(x) }, x.used ? '✓ Used' : 'Mark used'),
+      url ? h('a', { class: 'mini', href: url, target: '_blank', rel: 'noopener noreferrer' }, 'Source ↗') : null,
+      h('button', { type: 'button', class: 'btn danger', onclick: e => { if (armTap(e.currentTarget, 'Tap again')) deleteQuote(x) } }, 'Delete')].filter(Boolean));
+    const shot = x.image ? h('details', { class: 'cr-brief' }, h('summary', null, 'Screenshot')) : null;
+    if (shot) shot.addEventListener('toggle', () => { if (shot.open && shot.children.length === 1) refSrc(x.image).then(u => { if (u) shot.append(h('img', { class: 'qt-img', src: u, alt: 'Screenshot of the quote' })) }) }, { once: false });
+    return h('article', { class: 'qt-card' + (x.used ? ' used' : '') },
+      h('blockquote', { class: 'qt-text' }, x.text),
+      x.translation ? h('p', { class: 'qt-trans' }, x.translation) : null,
+      h('div', { class: 'cr-meta' }, [x.source ? '— ' + x.source : null, x.deity, d ? shortDate(d) : null].filter(Boolean).join(' · ')),
+      (x.tags || []).length ? h('div', { class: 'qt-tags' }, ...x.tags.map(t => h('button', { type: 'button', class: 'tag', onclick: () => { $('qtSearch').value = t; renderQuotes() } }, '#' + t))) : null,
+      x.note ? h('div', { class: 'qt-note' }, x.note) : null,
+      shot, actions);
+  }));
+}
+deityOptions($('awDeity'), 'None'); deityOptions($('crDeity'), 'As in the reference work'); deityOptions($('qtDeity'), 'None');
 $('awFile').addEventListener('change', e => { stageArtworks([...e.target.files]); e.target.value = '' });
 $('awSave').onclick = saveArtworks;
 $('awPaste').onclick = async () => {
@@ -1195,7 +1326,26 @@ awDrop.addEventListener('dragover', e => { e.preventDefault(); awDrop.classList.
 awDrop.addEventListener('dragleave', () => awDrop.classList.remove('over'));
 awDrop.addEventListener('drop', e => { e.preventDefault(); awDrop.classList.remove('over'); stageArtworks([...(e.dataTransfer?.files || [])].filter(f => f.type.startsWith('image/'))) });
 for (const btn of document.querySelectorAll('.segmented.fmt button')) btn.addEventListener('click', () => { state.cr.format = btn.dataset.fmt; renderCreate() });
-$('crGo').onclick = createWithOpus;
+$('crGo').onclick = askForPrompt;
+$('crFile').addEventListener('change', e => { stageCreateRefs([...e.target.files]); e.target.value = '' });
+$('crPaste').onclick = async () => {
+  try {
+    const files = [];
+    for (const item of await navigator.clipboard.read()) {
+      const t = item.types.find(x => /^image\/(png|jpeg|webp|gif)$/.test(x));
+      if (t) files.push(new File([await item.getType(t)], 'reference.' + t.split('/')[1], { type: t }));
+    }
+    if (files.length) stageCreateRefs(files); else msg('crMsg', 'err', 'The clipboard has no image. Copy one first, or tap Choose images.');
+  } catch { msg('crMsg', 'err', 'Your browser didn’t allow reading the clipboard. Tap Choose images instead.') }
+};
+const crDrop = $('crDrop');
+crDrop.addEventListener('dragover', e => { e.preventDefault(); crDrop.classList.add('over') });
+crDrop.addEventListener('dragleave', () => crDrop.classList.remove('over'));
+crDrop.addEventListener('drop', e => { e.preventDefault(); crDrop.classList.remove('over'); stageCreateRefs([...(e.dataTransfer?.files || [])].filter(f => f.type.startsWith('image/'))) });
+$('qtSave').onclick = saveQuote;
+$('qtFile').addEventListener('change', e => { if (e.target.files[0]) stageQuoteShot(e.target.files[0]); e.target.value = '' });
+$('qtSearch').addEventListener('input', renderQuotes);
+$('qtHideUsed').addEventListener('change', renderQuotes);
 
 // ── Setup and navigation ────────────────────────────────────────────────
 function boot() {

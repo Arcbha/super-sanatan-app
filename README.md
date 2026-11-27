@@ -37,15 +37,18 @@ When connecting (or opening) fails, the app checks GitHub step by step and shows
 
 ## Artwork
 
-Artwork you want to replicate or draw strong inspiration from (top bar → **Artwork**, or `#artwork`). Choose, paste or drop one or more images, optionally set the deity, a source link and a note, then **Save artwork**. Each card has **Create from this**. Stored as `planner/artworks.json` + `planner/artworks/` in Content-distribution.
+A static library of artwork you like (top bar → **Artwork**, or `#artwork`). Choose, paste or drop one or more images, optionally set the deity, a source link and a note, then **Save artwork**. **Get MJ prompt** on a card opens Create with that piece picked. Stored as `planner/artworks.json` + `planner/artworks/` in Content-distribution.
 
-## Create
+## Create (Midjourney prompts)
 
-Make a still image from saved artwork with Claude Opus 5.5 (top bar → **Create**, or `#create`):
+Images are made in **Midjourney**; Claude only writes the prompt (top bar → **Create**, or `#create`):
 
-1. Pick up to 3 pieces of artwork.
-2. Choose the deity (or leave it to the artwork), describe the image (pose, scene, mood, what to keep and what to change), pick **Post 4:5**, **Square 1:1** or **Story 9:16**, and whether to leave space for a verse.
-3. **Create with Opus.** Content-distribution's `planner-create.yml` Action runs Claude Code on your Claude Pro plan: Opus studies the artwork and writes the image prompt (shown on the card as soon as it's ready), then draws the image with code, looks at its own render and refines it. It takes a few minutes; the app updates by itself.
+1. **Reference work:** choose, paste or drop the images that inspired you (up to 6), each with an optional note on what to take from it, and/or type written inspiration. You can also add pieces from your saved Artwork.
+2. Pick the deity and date if you like, describe what you want, choose **4:5**, **1:1**, **9:16** or **16:9**, and whether to leave space for a verse.
+3. **Get Midjourney prompt.** Content-distribution's `planner-create.yml` Action runs Claude Code on your Claude Pro plan: Claude Opus studies the reference work and writes one prompt plus two alternatives (close and bolder), usually within a minute.
 
-Finished cards have **Open**, **Download**, **Copy prompt**, **Redraw** (edit the prompt and draw again) and **Delete**. Images are drawn with code, so they are crafted illustrations rather than photoreal paintings; the drawing instructions live in `tasks/planner_create.py` and will grow into fuller workflows. Stored as `planner/creations.json` + `planner/creations/<id>/` (image, prompt and drawing code).
+Each card has **Copy** and **Copy & open Midjourney ↗** for every prompt, a note on what Claude carried over, **Revise** (tell Claude what Midjourney got wrong; the old prompt moves to *Earlier prompts*) and **Delete**. Stored as `planner/creations.json` + the uploaded reference work in `planner/creations/<id>/refs/`.
 
+## Quotes
+
+Quote-based inspiration you want to keep (top bar → **Quotes**, or `#quotes`): the quote in any script, plus optional translation, source, deity, tags, link, note and a screenshot (pick one or paste it on the page). Search across everything, tap a tag to filter, **Copy** copies quote + translation + source, **Mark used** once posted (and **Hide used**). Never sent to Claude. Stored as `planner/quotes.json` + `planner/quotes/`.
