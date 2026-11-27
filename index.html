@@ -258,6 +258,18 @@ form.plan-form { display: flex; flex-direction: column; min-height: 0; flex: 1; 
 .badge.ai { background: var(--indigo-soft); color: var(--indigo); align-self: flex-start; }
 .badge.MEGA { align-self: flex-start; }
 .badge.ai.working::before { animation: pulse 1.2s ease-in-out infinite; }
+.ig-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; }
+.ig-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ig-line { font-size: 13.5px; color: var(--sub); overflow-wrap: anywhere; }
+.ig-line.err { color: var(--red); }
+.ig-bar .btn { flex: none; }
+@media (max-width: 440px) { .ig-bar { flex-direction: column; align-items: stretch; } }
+.mini.ig { background: var(--grad); color: var(--on-grad); }
+.mini.ig:hover { filter: brightness(1.03); background: var(--grad); }
+.final-label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--sub); margin-right: 2px; }
+.posted-box { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; background: var(--green-soft); border-radius: 14px; padding: 12px 14px; }
+.posted-box strong { color: var(--green); font-size: 14px; }
+.ai-result-text.cap { white-space: pre-wrap; }
 .spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 50% { opacity: .25; } }
@@ -463,6 +475,7 @@ form.plan-form { display: flex; flex-direction: column; min-height: 0; flex: 1; 
 
     <div class="msg banner" id="appMsg" role="status" hidden></div>
     <section class="stats hide" id="stats" aria-label="Summary"></section>
+    <section class="card ig-bar hide" id="igBar" aria-label="Instagram check"></section>
     <section class="days hide" id="days" aria-live="polite"></section>
 
     <section class="card table-card hide" id="ahead" aria-labelledby="aheadTitle">

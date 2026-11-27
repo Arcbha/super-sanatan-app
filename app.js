@@ -10,6 +10,10 @@ const BOOKMARKS = 'planner/bookmarks.json', BM_DIR = 'planner/bookmarks';
 const ARTWORKS = 'planner/artworks.json', AW_DIR = 'planner/artworks', CREATIONS = 'planner/creations.json', CREATE_REQ = 'planner/create-requests', CR_DIR = 'planner/creations';
 const QUOTES = 'planner/quotes.json', QT_DIR = 'planner/quotes';
 const ACCOUNTS_FILE = 'planner/claude-accounts.json';
+const FINALS = 'planner/finals', POST_CHECKS = 'planner/post-checks', IG_CHECK = 'planner/instagram-check.json';
+const FINAL_TYPES = { 'image/jpeg': 'image', 'image/png': 'image', 'image/webp': 'image', 'video/mp4': 'video', 'video/quicktime': 'video' };
+const FINAL_MIME = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', mp4: 'video/mp4', mov: 'video/quicktime' };
+const MAX_FINALS = 10, FINAL_SIDE = 2160, FINAL_Q = 0.92, IG_GIVE_UP_MS = 6 * 60 * 1000;
 const ACCOUNT_ORDER = [['google', 'Account Google'], ['outlook', 'Account Outlook']];   // first in sequence = Account Google
 const ACTIVE = ['queued', 'writing', 'briefing', 'drawing'];
 const MAX_CR_IMAGES = 6;
@@ -244,20 +248,40 @@ const state = {
   view: 'calendar', bookmarks: [], bm: { file: null, preview: null, saving: false },
   artworks: [], aw: { files: [], saving: false }, creations: [], cr: { picked: [], files: [], format: '4:5', saving: false, revise: null },
   quotes: [], qt: { file: null, preview: null, saving: false },
+  igCheck: null, igAsked: 0, igPrevAt: '',
 };
 const cleanRefs = refs => (Array.isArray(refs) ? refs : []).filter(r => r && ((r.type === 'text' && typeof r.text === 'string' && r.text.trim()) || (['image', 'video', 'pdf'].includes(r.type) && typeof r.path === 'string' && r.path.startsWith(REFS + '/'))));
 const kindLabel = k => (KINDS.find(x => x[0] === k) || [null, 'Item'])[1];
 // Claude prompt state on a plan: queued (Action running), done (text ready), error, or none.
-function aiState(p) {
-  const a = p && p.aiPrompt;
+function aiState(p, key = 'aiPrompt', field = 'mjPrompt') {
+  const a = p && p[key];
   if (!a || typeof a !== 'object') return { kind: 'none' };
   if (a.status === 'queued') {
     const age = Date.now() - Date.parse(a.requestedAt || 0);
     return { kind: age > AI_GIVE_UP_MS ? 'stuck' : 'queued', slow: age > AI_SLOW_MS };
   }
   if (a.status === 'error') return { kind: 'error', error: String(a.error || 'Unknown error') };
-  if (a.status === 'done' && typeof a.text === 'string' && a.text.trim()) return { kind: 'done', text: a.text.trim(), suggestion: a.text.trim() !== String(p.mjPrompt || '').trim(), account: typeof a.account === 'string' ? a.account : '' };
+  if (a.status === 'done' && typeof a.text === 'string' && a.text.trim()) return { kind: 'done', text: a.text.trim(), suggestion: a.text.trim() !== String(p[field] || '').trim(), account: typeof a.account === 'string' ? a.account : '' };
   return { kind: 'none' };
+}
+const capState = p => aiState(p, 'aiCaption', 'igCaption');   // Instagram caption from Claude, same states
+const cleanFinals = list => (Array.isArray(list) ? list : []).filter(f => f && typeof f.path === 'string' && f.path.startsWith(FINALS + '/'))
+  .map(f => ({ path: f.path, name: String(f.name || ''), type: f.type === 'video' || /\.(mp4|mov)$/i.test(f.path) ? 'video' : 'image' }));
+const agoText = iso => {
+  const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
+  if (!isFinite(m)) return '';
+  return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 48 * 60 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
+};
+async function finalImage(file) {                     // final images stay sharp: ≤2160 px, high-quality JPEG; small JPEG/PNG untouched
+  try {
+    const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const scale = Math.min(1, FINAL_SIDE / Math.max(bmp.width, bmp.height));
+    if (scale === 1 && file.type !== 'image/webp' && file.size < 8 * 1024 * 1024) { bmp.close && bmp.close(); return file }
+    const c = document.createElement('canvas'); c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height); bmp.close && bmp.close();
+    const out = await new Promise(r => c.toBlob(r, 'image/jpeg', FINAL_Q));
+    return out ? new File([out], file.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' }) : file;
+  } catch { return file }
 }
 
 // Step-by-step check of the connection. Each line says what worked or what to change.
@@ -295,8 +319,9 @@ function reconnect() { store.del(K.tok); state.plans = []; state.loaded = false;
 async function loadAll(first) {
   msg('appMsg', '', first ? 'Loading from GitHub…' : '');
   try {
-    const [pan, plans, bms, aws, crs, qts, acc] = await Promise.all([state.panchang ? null : raw(PANCHANG), raw(PLANS), raw(BOOKMARKS), raw(ARTWORKS), raw(CREATIONS), raw(QUOTES), raw(ACCOUNTS_FILE).catch(() => null)]);
+    const [pan, plans, bms, aws, crs, qts, acc, igc] = await Promise.all([state.panchang ? null : raw(PANCHANG), raw(PLANS), raw(BOOKMARKS), raw(ARTWORKS), raw(CREATIONS), raw(QUOTES), raw(ACCOUNTS_FILE).catch(() => null), raw(IG_CHECK).catch(() => null)]);
     state.accounts = parseAccounts(acc);
+    state.igCheck = parseIgCheck(igc);
     state.quotes = parseList(qts, 'quotes', QUOTES);
     state.bookmarks = parseList(bms, 'bookmarks', BOOKMARKS);
     state.artworks = parseList(aws, 'artworks', ARTWORKS);
@@ -332,15 +357,16 @@ async function loadAll(first) {
 let pollTimer = null;
 function schedulePoll() {
   if (pollTimer || !cfg().tok) return;
-  if (!state.plans.some(p => aiState(p).kind === 'queued')) return;
+  if (!state.igAsked && !state.plans.some(p => aiState(p).kind === 'queued' || capState(p).kind === 'queued')) return;
   pollTimer = setTimeout(poll, POLL_MS);
 }
 async function poll() {
   pollTimer = null;
   if (document.visibilityState !== 'visible' || state.editing || state.saving) { schedulePoll(); return }
   try {
-    const before = new Map(state.plans.map(p => [p.id, aiState(p).kind]));
-    const plans = parsePlans(await raw(PLANS));
+    const before = new Map(state.plans.map(p => [p.id, aiState(p).kind])), capBefore = new Map(state.plans.map(p => [p.id, capState(p).kind]));
+    const [plansTxt, igTxt] = await Promise.all([raw(PLANS), state.igAsked ? raw(IG_CHECK).catch(() => null) : null]);
+    const plans = parsePlans(plansTxt);
     if (state.editing || state.saving) { schedulePoll(); return }
     state.plans = plans;
     raw(ACCOUNTS_FILE).then(t => { state.accounts = parseAccounts(t) }).catch(() => {});
@@ -348,7 +374,11 @@ async function poll() {
       const k = aiState(p).kind;
       if (before.get(p.id) === 'queued' && k === 'done') msg('appMsg', 'ok', `Claude wrote the Midjourney prompt for “${p.title}”.`);
       if (before.get(p.id) === 'queued' && k === 'error') msg('appMsg', 'err', `Claude couldn't write a prompt for “${p.title}”. Open the plan to see why.`);
+      const c = capState(p).kind;
+      if (capBefore.get(p.id) === 'queued' && c === 'done') msg('appMsg', 'ok', `Claude wrote the Instagram caption for “${p.title}”.`);
+      if (capBefore.get(p.id) === 'queued' && c === 'error') msg('appMsg', 'err', `Claude couldn't write a caption for “${p.title}”. Open the plan to see why.`);
     }
+    if (state.igAsked) igCheckArrived(parseIgCheck(igTxt));
     render();
   } catch { /* network blip: try again next tick */ }
   schedulePoll();
@@ -384,6 +414,7 @@ function render() {
   $('todayLine').textContent = `${shortDate(state.start)} – ${shortDate(end)} ${end.slice(0, 4)} · Today is ${WEEKDAYS[jsDow(t)]}, ${longDate(t)} · IST`;
   $('todayBtn').setAttribute('aria-pressed', String(state.start === t));
   renderStats();
+  renderIgBar();
   $('days').replaceChildren(...[0, 1, 2, 3].map(i => dayCard(addDays(state.start, i))));
   renderAhead();
   renderDrawer();
@@ -400,6 +431,40 @@ function renderStats() {
     stat('In progress', state.loaded ? String(count('making')) : '–', 'Status: Making'),
     stat('Ready to post', state.loaded ? String(count('ready')) : '–', `${count('posted')} posted`),
     stat('Next observance', nextObs ? nextObs.name : (state.panchang ? 'None in 60 days' : '–'), nextObs ? `${relLabel(diffDays(nextObs.date, state.today))} · ${shortDate(nextObs.date)}` : '', true));
+}
+
+// ── Instagram check (planner-posted.yml in Content-distribution reads the account's posts; read only) ──
+function parseIgCheck(txt) { try { const d = JSON.parse(txt || 'null'); return d && typeof d === 'object' ? d : null } catch { return null } }
+function renderIgBar() {
+  const c = state.igCheck, asked = !!state.igAsked;
+  const when = c && c.checkedAt ? agoText(c.checkedAt) : '';
+  const failed = !asked && c && c.ok === false;
+  const line = asked ? 'Checking Instagram… this takes about a minute.'
+    : failed ? `The last check failed${when ? ' (' + when + ')' : ''}: ${c.error || 'unknown error'}`
+    : c && when ? `Checked ${when}. Posts are matched to plans automatically every 3 hours.`
+    : 'Posts are matched to plans automatically every 3 hours.';
+  $('igBar').replaceChildren(
+    h('div', { class: 'ig-copy' }, h('span', { class: 'sec-label' }, 'Instagram'), h('span', { class: failed ? 'ig-line err' : 'ig-line' }, line)),
+    h('button', { type: 'button', class: 'btn sm', id: 'igCheckBtn', disabled: asked || !state.loaded, onclick: checkInstagramNow },
+      asked ? [h('span', { class: 'spinner', 'aria-hidden': 'true' }), 'Checking…'] : 'Check Instagram now'));
+}
+async function checkInstagramNow() {
+  if (state.igAsked) return;
+  state.igAsked = Date.now(); state.igPrevAt = (state.igCheck && state.igCheck.checkedAt) || ''; renderIgBar();
+  try {
+    await commitFiles([{ path: `${POST_CHECKS}/${stamp()}.json`, b64: b64utf8(JSON.stringify({ requestedAt: new Date().toISOString() }) + '\n') }], 'planner: check Instagram now');
+  } catch (e) { state.igAsked = 0; renderIgBar(); msg('appMsg', 'err', e.message); return }
+  schedulePoll();
+}
+function igCheckArrived(c) {
+  if (c && c.checkedAt && c.checkedAt !== state.igPrevAt) {
+    state.igAsked = 0; state.igCheck = c;
+    if (c.ok === false) msg('appMsg', 'err', `Instagram check failed: ${c.error || 'unknown error'}`);
+    else msg('appMsg', 'ok', c.newlyPosted ? `Instagram checked: ${c.newlyPosted} plan${c.newlyPosted > 1 ? 's' : ''} marked Posted.` : 'Instagram checked: no new posts matched a plan.');
+  } else if (Date.now() - state.igAsked > IG_GIVE_UP_MS) {
+    state.igAsked = 0;
+    msg('appMsg', 'err', 'The Instagram check didn’t answer. In Content-distribution, open Actions → “Planner — Instagram check” to see why.');
+  }
 }
 
 function dayCard(date) {
@@ -459,7 +524,26 @@ function planRow(p) {
       h('button', { type: 'button', class: `badge ${status}`, title: 'Move to the next status', onclick: e => { e.stopPropagation(); cycleStatus(p, e.currentTarget) } }, STATUSES.find(s => s[0] === status)[1])),
     meta ? h('span', { class: 'plan-meta' }, meta) : null,
     p.notes ? h('span', { class: 'plan-meta' }, String(p.notes)) : null,
-    aiChip(p), refStrip(p), planActions(p));
+    aiChip(p), postChip(p), finalsStrip(p), refStrip(p), planActions(p));
+}
+function postChip(p) {
+  const ps = p.posted;
+  if (ps && typeof ps === 'object') {
+    const n = (v, one) => `${Number(v) || 0} ${one}${Number(v) === 1 ? '' : 's'}`;
+    return h('span', { class: 'badge ready ig-done' }, `On Instagram · ${n(ps.likes, 'like')} · ${n(ps.comments, 'comment')}`);
+  }
+  const c = capState(p);
+  if (c.kind === 'queued') return h('span', { class: 'badge ai working' }, 'Claude is writing the caption…');
+  if (c.kind === 'stuck') return h('span', { class: 'badge MEGA' }, 'Caption: Claude didn’t answer');
+  if (c.kind === 'error') return h('span', { class: 'badge MEGA', title: c.error }, 'Caption failed');
+  return null;
+}
+function finalsStrip(p) {
+  const finals = cleanFinals(p.finals);
+  if (!finals.length) return null;
+  return h('div', { class: 'ref-strip', onclick: e => e.stopPropagation() },
+    h('span', { class: 'final-label' }, 'Final'), finals.slice(0, 5).map(f => thumb(f, true)),
+    finals.length > 5 ? h('span', { class: 'ref-count' }, `+${finals.length - 5}`) : null);
 }
 function aiChip(p) {
   const a = aiState(p);
@@ -497,6 +581,11 @@ function planActions(p) {
   const prompt = typeof p.mjPrompt === 'string' ? p.mjPrompt.trim() : '';
   const link = safeUrl(p.mjLink);
   const box = h('div', { class: 'plan-actions', onclick: e => e.stopPropagation(), onkeydown: e => e.stopPropagation() });
+  const caption = String(p.igCaption || '').trim(), permalink = safeUrl(p.posted && p.posted.permalink);
+  if (!p.posted && cleanFinals(p.finals).length) box.append(h('button', { type: 'button', class: 'mini ig', onclick: e => postToInstagram(p, e.currentTarget) }, 'Post to Instagram'));
+  if (caption && !p.posted) box.append(h('button', { type: 'button', class: 'mini', onclick: e => copyText(e.currentTarget, caption, box, 'Copy caption') }, 'Copy caption'));
+  if (permalink) box.append(h('a', { class: 'mini', href: permalink, target: '_blank', rel: 'noopener noreferrer' }, 'Open post ↗'));
+  if (p.posted) return box;
   if (prompt) box.append(h('button', { type: 'button', class: 'mini', onclick: e => copyText(e.currentTarget, prompt, box, 'Copy MJ prompt') }, 'Copy MJ prompt'),
     h('a', { class: 'mini', href: 'https://www.midjourney.com/imagine', target: '_blank', rel: 'noopener noreferrer' }, 'Imagine ↗'));
   if (link) box.append(h('a', { class: 'mini', href: link, target: '_blank', rel: 'noopener noreferrer' }, 'Open generation ↗'));
@@ -514,6 +603,45 @@ async function copyText(btn, text, box, label) {
     ta.value = text; box.append(ta); ta.focus(); ta.select();
     btn.textContent = 'Select and copy';
   }
+}
+// Post to Instagram: copy the caption, then hand the final image(s) to the phone's share sheet → Instagram.
+// Music, cover and tags are chosen in Instagram; the Instagram check marks the plan Posted afterwards.
+const shareCache = new Map();
+async function postToInstagram(p, btn) {
+  const label = 'Post to Instagram', caption = String(p.igCaption || '').trim(), finals = cleanFinals(p.finals);
+  const copied = caption && navigator.clipboard ? navigator.clipboard.writeText(caption).then(() => true, () => false) : Promise.resolve(false);
+  const key = p.id + '|' + finals.map(f => f.path).join(',');
+  try {
+    let files = shareCache.get(key);
+    if (!files) {
+      btn.disabled = true; btn.textContent = 'Getting images…';
+      files = await Promise.all(finals.map(async (f, i) => {
+        const b = await raw(f.path, null, true);
+        if (!b) throw new Error('A final image is missing from the repo. Open the plan and add it again.');
+        const ext = f.path.split('.').pop().toLowerCase();
+        return new File([b], `${slugify(p.title || 'post')}-${i + 1}.${ext}`, { type: FINAL_MIME[ext] || b.type });
+      }));
+      shareCache.set(key, files);
+    }
+    const ok = await copied;
+    btn.disabled = false; btn.textContent = label;
+    const capLine = ok ? 'Caption copied. ' : caption ? 'Couldn’t copy the caption: use Copy caption. ' : 'This plan has no caption yet. ';
+    const after = 'The calendar marks it Posted after the next Instagram check (within 3 hours), or tap Check Instagram now.';
+    if (navigator.canShare && navigator.canShare({ files })) {
+      try { await navigator.share({ files }) } catch (e) {
+        if (e.name === 'AbortError') { msg('appMsg', '', capLine + 'Nothing was shared.'); return }
+        if (e.name === 'NotAllowedError') { btn.textContent = 'Ready: tap to share'; msg('appMsg', '', 'The images are ready. Tap the button again to open the share sheet.'); return }
+        throw e;
+      }
+      msg('appMsg', 'ok', capLine + 'In Instagram choose Post or Reel, add music, paste the caption and share. ' + after);
+    } else {
+      for (const f of files) {
+        const u = URL.createObjectURL(f), a = h('a', { href: u, download: f.name });
+        document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 60000);
+      }
+      msg('appMsg', 'ok', capLine + `This browser can’t share files, so the image${files.length > 1 ? 's were' : ' was'} downloaded. Post from the Instagram app on your phone. ` + after);
+    }
+  } catch (e) { btn.disabled = false; btn.textContent = label; msg('appMsg', 'err', e.message || 'Couldn’t get the images. Try again.') }
 }
 function briefFor(p) {
   const refs = cleanRefs(p.refs);
@@ -555,15 +683,15 @@ function openEditor(date, id, preset) {
   state.draft = p ? {
     title: String(p.title || ''), kind: p.kind || 'still', deity: p.deity || '', status: p.status || 'idea', date: isDate(p.date) ? p.date : date,
     platforms: Array.isArray(p.platforms) ? [...p.platforms] : [], notes: String(p.notes || ''), mjPrompt: String(p.mjPrompt || ''), mjLink: String(p.mjLink || ''),
-    refs: cleanRefs(p.refs).map(r => ({ ...r })),
-  } : { title: '', kind: 'still', deity: '', status: 'idea', date, platforms: ['instagram'], notes: '', mjPrompt: '', mjLink: '', refs: [], ...(preset || {}) };
+    refs: cleanRefs(p.refs).map(r => ({ ...r })), finals: cleanFinals(p.finals), igCaption: String(p.igCaption || ''),
+  } : { title: '', kind: 'still', deity: '', status: 'idea', date, platforms: ['instagram'], notes: '', mjPrompt: '', mjLink: '', refs: [], finals: [], igCaption: '', ...(preset || {}) };
   state.removed = new Set(); state.formError = '';
   render();
   const form = document.querySelector('form.plan-form');
   if (form) (p ? $('drawer').querySelector('.drawer-head button') : form.querySelector('input[name=title]'))?.focus({ preventScroll: true });
 }
 function dropPending() {
-  if (state.draft) for (const r of state.draft.refs) if (r.pending && r.preview) URL.revokeObjectURL(r.preview);
+  if (state.draft) for (const r of [...state.draft.refs, ...(state.draft.finals || [])]) if (r.pending && r.preview) URL.revokeObjectURL(r.preview);
 }
 function renderDrawer() {
   const dr = $('drawer'), sc = $('scrim');
@@ -587,10 +715,11 @@ function planForm() {
   const d = state.draft, fid = state.editing.id || 'new';
   const sync = form => {
     const fd = new FormData(form);
-    for (const k of ['title', 'kind', 'deity', 'status', 'date', 'notes', 'mjPrompt', 'mjLink']) if (fd.has(k)) d[k] = String(fd.get(k));
+    for (const k of ['title', 'kind', 'deity', 'status', 'date', 'notes', 'mjPrompt', 'mjLink', 'igCaption']) if (fd.has(k)) d[k] = String(fd.get(k));
     d.platforms = fd.getAll('platforms').map(String);
   };
-  const refsBox = h('div', { class: 'sec' });
+  const refsBox = h('div', { class: 'sec' }), finalsBox = h('div', { class: 'sec' });
+  const plan = state.editing.id ? state.plans.find(x => x.id === state.editing.id) : null;
   const sel = (id, name, options, value) => h('select', { id, name }, options.map(([k, label]) => h('option', { value: k, selected: k === value }, label)));
   const form = h('form', { class: 'plan-form',
     oninput: e => sync(e.currentTarget), onchange: e => sync(e.currentTarget),
@@ -615,6 +744,12 @@ function planForm() {
         aiPanel(() => form, sync),
         h('label', { class: 'field', for: `mp-${fid}` }, 'Prompt', h('textarea', { id: `mp-${fid}`, name: 'mjPrompt', rows: '3', maxlength: '4000', placeholder: 'Paste or write the /imagine prompt', value: d.mjPrompt })),
         h('label', { class: 'field', for: `ml-${fid}` }, 'Generation link', h('input', { type: 'url', id: `ml-${fid}`, name: 'mjLink', inputmode: 'url', value: d.mjLink, placeholder: 'https://www.midjourney.com/jobs/…' }))),
+      h('div', { class: 'form-section' },
+        h('div', { class: 'form-section-title' }, 'Instagram post'),
+        postedInfo(plan),
+        finalsBox,
+        captionPanel(() => form, sync),
+        h('label', { class: 'field', for: `ig-${fid}` }, 'Caption', h('textarea', { id: `ig-${fid}`, name: 'igCaption', rows: '6', maxlength: '2200', placeholder: 'Write the caption, or let Claude write it from the final image. Hashtags at the end.', value: d.igCaption }))),
       state.formError ? h('div', { class: 'msg banner err', role: 'alert' }, state.formError) : null),
     h('div', { class: 'form-actions' },
       state.editing.id ? h('button', { type: 'button', class: 'btn danger', disabled: state.saving, onclick: e => { if (armTap(e.currentTarget, 'Tap again to delete')) deletePlan() } }, 'Delete') : h('span'),
@@ -622,6 +757,7 @@ function planForm() {
         h('button', { type: 'button', class: 'btn', disabled: state.saving, onclick: closeEditor }, 'Cancel'),
         h('button', { type: 'submit', class: 'btn primary', disabled: state.saving }, state.saving ? `Saving… ${Math.round(state.progress * 100)}%` : state.editing.id ? 'Save changes' : 'Create plan'))));
   renderRefs(refsBox);
+  renderFinals(finalsBox);
   return form;
 }
 
@@ -648,6 +784,69 @@ function aiPanel(getForm, sync) {   // the form is still being built when this r
   }
   if (a.kind === 'error' || a.kind === 'stuck') box.append(h('div', { class: 'msg banner err' }, a.kind === 'stuck' ? 'Claude didn’t answer. In Content-distribution, open Actions → “Planner — Claude prompt writer” to see why. Usually the Claude sign-in token is missing or expired: run `claude setup-token` and save it as the CLAUDE_CODE_OAUTH_TOKEN secret.' : `Claude couldn’t write a prompt: ${a.error}`));
   return box;
+}
+
+function captionPanel(getForm, sync) {
+  const plan = state.editing.id ? state.plans.find(x => x.id === state.editing.id) : null;
+  const a = capState(plan), d = state.draft, busy = a.kind === 'queued';
+  const box = h('div', { class: 'ai-panel' },
+    h('div', { class: 'ai-row' },
+      h('div', { class: 'ai-copy' },
+        h('div', { class: 'ai-title' }, icon(SPARK), 'Write caption with Claude'),
+        h('div', { class: 'ai-sub' }, busy ? 'Claude is looking at the final image(s). This usually takes under a minute; you can close this panel.'
+          : d.finals.length ? 'Claude looks at the final image(s), title, deity, day and notes, and writes the caption and hashtags in the account’s Instagram style. Saves the plan first.'
+          : 'Add the final image first: Claude writes the caption from what is in it. Saves the plan first.')),
+      h('button', { type: 'button', class: 'btn claude sm', disabled: busy || state.saving, onclick: () => { sync(getForm()); savePlan({ caption: true }) } },
+        busy ? h('span', { class: 'spinner', 'aria-hidden': 'true' }) : icon(SPARK), busy ? 'Writing…' : a.kind === 'done' ? 'Write again' : 'Write caption')));
+  if (a.kind === 'done' && a.suggestion) {
+    box.append(h('div', { class: 'ai-result' },
+      h('div', { class: 'ai-result-label' }, 'Claude’s caption' + (a.account ? ' · ' + a.account : '')),
+      h('p', { class: 'ai-result-text cap' }, a.text),
+      h('div', { class: 'ai-actions' },
+        h('button', { type: 'button', class: 'btn primary sm', onclick: () => { const ta = getForm().querySelector('textarea[name=igCaption]'); ta.value = a.text; d.igCaption = a.text; box.querySelector('.ai-result')?.remove() } }, 'Use this caption'),
+        h('button', { type: 'button', class: 'btn sm', onclick: e => copyText(e.currentTarget, a.text, box, 'Copy') }, 'Copy'))));
+  }
+  if (a.kind === 'error' || a.kind === 'stuck') box.append(h('div', { class: 'msg banner err' }, a.kind === 'stuck' ? 'Claude didn’t answer. In Content-distribution, open Actions → “Planner — Claude prompt writer” to see why.' : `Claude couldn’t write the caption: ${a.error}`));
+  return box;
+}
+function postedInfo(plan) {
+  const ps = plan && plan.posted;
+  if (!ps || typeof ps !== 'object') return null;
+  const day = isDate(String(ps.at || '').slice(0, 10)) ? new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'long' }).format(new Date(ps.at)) : '';
+  const link = safeUrl(ps.permalink);
+  return h('div', { class: 'posted-box' },
+    h('div', null, h('strong', null, 'Posted on Instagram' + (day ? ' · ' + day : '')),
+      h('div', { class: 'quiet' }, `${Number(ps.likes) || 0} likes · ${Number(ps.comments) || 0} comments` + (ps.checkedAt ? ` · updated ${agoText(ps.checkedAt)}` : ''))),
+    link ? h('a', { class: 'btn sm', href: link, target: '_blank', rel: 'noopener noreferrer' }, 'Open post ↗') : null);
+}
+function renderFinals(box, note) {
+  const d = state.draft, fid = state.editing.id || 'new';
+  const remove = f => () => {
+    d.finals = d.finals.filter(x => x !== f);
+    if (f.pending && f.preview) URL.revokeObjectURL(f.preview);
+    if (!f.pending && f.path) state.removed.add(f.path);
+    renderFinals(box);
+  };
+  const input = h('input', { type: 'file', id: `fi-${fid}`, multiple: true, accept: Object.keys(FINAL_TYPES).join(',') });
+  input.addEventListener('change', () => { addFinals([...input.files], box); input.value = '' });
+  box.replaceChildren(
+    h('span', { class: 'sec-label' }, 'Final image' + (d.finals.length > 1 ? 's (carousel order)' : '')),
+    d.finals.length ? h('div', { class: 'thumbs' }, d.finals.map(f => h('span', { class: 'thumb-wrap' }, thumb(f, false), f.pending ? h('span', { class: 'new' }, 'NEW') : null,
+      h('button', { type: 'button', class: 'x', 'aria-label': `Remove ${f.name || 'final image'}`, onclick: remove(f) }, '×')))) : '',
+    h('div', { class: 'drop' }, input, h('label', { for: `fi-${fid}`, class: 'btn sm', style: 'cursor:pointer' }, d.finals.length ? 'Add more' : 'Add final image'),
+      h('span', null, 'The Midjourney image you’ll post (or the reel video). Up to 10 for a carousel. Saved sharp, up to 2160 px.')),
+    note ? h('span', { class: note.err ? 'msg err' : 'msg' }, note.text) : '');
+}
+function addFinals(files, box) {
+  const d = state.draft, problems = [];
+  for (const f of files) {
+    const t = FINAL_TYPES[f.type];
+    if (!t) { problems.push(`${f.name}: use a JPEG, PNG or WebP image, or an MP4/MOV video`); continue }
+    if (f.size > MAX_FILE) { problems.push(`${f.name}: over 50 MB`); continue }
+    if (d.finals.length >= MAX_FINALS) { problems.push(`Instagram allows up to ${MAX_FINALS} in a carousel`); break }
+    d.finals.push({ type: t, pending: true, file: f, name: String(f.name || 'final').slice(0, 120), preview: t === 'image' ? URL.createObjectURL(f) : null });
+  }
+  renderFinals(box, problems.length ? { err: true, text: problems.join(' · ') } : null);
 }
 
 function renderRefs(box, note) {
@@ -722,20 +921,32 @@ async function savePlan(opts = {}) {
       files.push({ path, b64: await fileB64(f) });
       refs.push({ type: r.type, path, name: r.name });
     }
+    const finals = [];
+    let n = 0;
+    for (const f of d.finals) {
+      if (!f.pending) { finals.push({ path: f.path, name: f.name || '', type: f.type }); continue }
+      const file = f.type === 'image' ? await finalImage(f.file) : f.file;
+      const ext = { 'image/jpeg': 'jpg', 'image/png': 'png', 'video/mp4': 'mp4', 'video/quicktime': 'mov' }[file.type] || 'jpg';
+      const path = `${FINALS}/${id}/${stamp()}-${++n}-${slugify(f.name.replace(/\.\w+$/, ''))}.${ext}`;
+      files.push({ path, b64: await fileB64(file) });
+      finals.push({ path, name: f.name, type: f.type });
+    }
     for (const path of state.removed) if (!usedElsewhere(path, id)) files.push({ path, del: true });
     const now = new Date().toISOString();
-    if (opts.ai) files.push({ path: `${REQUESTS}/${id}-${stamp()}.json`, b64: b64utf8(JSON.stringify({ planId: id, requestedAt: now }) + '\n') });
-    const fields = { title, date: d.date, kind: d.kind, deity: d.deity, status: d.status, platforms: d.platforms, notes: d.notes.trim(), mjPrompt: d.mjPrompt.trim(), mjLink: d.mjLink.trim(), refs, updatedAt: now, ...(opts.ai ? { aiPrompt: { status: 'queued', requestedAt: now } } : {}) };
-    const upload = files.filter(f => f.b64 && f.path.startsWith(REFS + '/')).length;
+    if (opts.ai) files.push({ path: `${REQUESTS}/${id}-${stamp()}.json`, b64: b64utf8(JSON.stringify({ planId: id, kind: 'prompt', requestedAt: now }) + '\n') });
+    if (opts.caption) files.push({ path: `${REQUESTS}/${id}-${stamp()}-caption.json`, b64: b64utf8(JSON.stringify({ planId: id, kind: 'caption', requestedAt: now }) + '\n') });
+    const fields = { title, date: d.date, kind: d.kind, deity: d.deity, status: d.status, platforms: d.platforms, notes: d.notes.trim(), mjPrompt: d.mjPrompt.trim(), mjLink: d.mjLink.trim(), refs, finals, igCaption: d.igCaption.trim(), updatedAt: now,
+      ...(opts.ai ? { aiPrompt: { status: 'queued', requestedAt: now } } : {}), ...(opts.caption ? { aiCaption: { status: 'queued', requestedAt: now } } : {}) };
+    const upload = files.filter(f => f.b64 && f.path.startsWith(REFS + '/')).length, finalUp = files.filter(f => f.b64 && f.path.startsWith(FINALS + '/')).length;
     await savePlans(plans => {
       const i = plans.findIndex(p => p.id === id);
       if (i >= 0) plans[i] = { ...plans[i], ...fields };
       else plans.push({ id, createdAt: now, ...fields });
       return plans;
-    }, `planner: ${editingId ? 'update' : 'add'} "${title}" (${d.date})${upload ? ` with ${upload} reference file${upload > 1 ? 's' : ''}` : ''}${opts.ai ? ' + ask Claude for a prompt' : ''}`, files, p => { state.progress = p; const b = document.querySelector('form.plan-form button[type=submit]'); if (b) b.textContent = `Saving… ${Math.round(p * 100)}%` });
+    }, `planner: ${editingId ? 'update' : 'add'} "${title}" (${d.date})${upload ? ` with ${upload} reference file${upload > 1 ? 's' : ''}` : ''}${finalUp ? ` + ${finalUp} final image${finalUp > 1 ? 's' : ''}` : ''}${opts.ai ? ' + ask Claude for a prompt' : ''}${opts.caption ? ' + ask Claude for a caption' : ''}`, files, p => { state.progress = p; const b = document.querySelector('form.plan-form button[type=submit]'); if (b) b.textContent = `Saving… ${Math.round(p * 100)}%` });
     state.saving = false;
     closeEditor();
-    msg('appMsg', 'ok', opts.ai ? `Saved “${title}”. Claude is writing the prompt; it appears on the plan in about a minute.` : `Saved “${title}” to the repo.`);
+    msg('appMsg', 'ok', opts.ai ? `Saved “${title}”. Claude is writing the prompt; it appears on the plan in about a minute.` : opts.caption ? `Saved “${title}”. Claude is writing the caption; it appears on the plan in about a minute.` : `Saved “${title}” to the repo.`);
     schedulePoll();
   } catch (e) {
     state.saving = false; state.formError = e.message || 'Couldn’t save. Try again.'; render();
@@ -745,7 +956,7 @@ async function deletePlan() {
   const id = state.editing && state.editing.id;
   if (!id || state.saving) return;
   const p = state.plans.find(x => x.id === id);
-  const files = cleanRefs(p && p.refs).filter(r => r.path && !usedElsewhere(r.path, id)).map(r => ({ path: r.path, del: true }));
+  const files = [...cleanRefs(p && p.refs).filter(r => r.path && !usedElsewhere(r.path, id)), ...cleanFinals(p && p.finals)].map(r => ({ path: r.path, del: true }));
   state.saving = true; render();
   try {
     await savePlans(plans => plans.filter(x => x.id !== id), `planner: delete "${(p && p.title) || id}"`, files);
@@ -921,7 +1132,7 @@ function applyView() {
   const h = location.hash.replace('#', '');
   state.view = ['create', 'artwork', 'bookmarks', 'quotes'].includes(h) ? h : 'calendar';
   const show = v => on && state.view === v;
-  for (const id of ['pageHead', 'stats', 'days', 'ahead']) $(id).classList.toggle('hide', !show('calendar'));
+  for (const id of ['pageHead', 'stats', 'igBar', 'days', 'ahead']) $(id).classList.toggle('hide', !show('calendar'));
   $('createView').classList.toggle('hide', !show('create'));
   $('artworkView').classList.toggle('hide', !show('artwork'));
   $('bookmarksView').classList.toggle('hide', !show('bookmarks'));
