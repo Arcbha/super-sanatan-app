@@ -932,7 +932,47 @@ function applyView() {
   if (show('create')) renderCreate();
   if (show('quotes')) renderQuotes();
 }
-window.addEventListener('hashchange', () => { if (state.editing && !state.saving) closeEditor(); applyView(); window.scrollTo(0, 0) });
+window.addEventListener('hashchange', () => {
+  if (state.editing && !state.saving) closeEditor();
+  applyView(); window.scrollTo(0, 0);
+  if (state.swipeDir) {                      // slide the new tab in from the side it came from
+    const box = document.querySelector('main.page .container');
+    box.classList.remove('swipe-left', 'swipe-right'); void box.offsetWidth;
+    box.classList.add('swipe-' + state.swipeDir); state.swipeDir = '';
+    setTimeout(() => box.classList.remove('swipe-left', 'swipe-right'), 260);
+  }
+});
+// ── Swipe left / right to move between tabs (phones) ─────────────────────
+const tabOrder = () => [...document.querySelectorAll('.tabs a')].map(a => a.getAttribute('href'));
+function scrollsSideways(el) {
+  for (; el && el !== document.body; el = el.parentElement) {
+    const ox = getComputedStyle(el).overflowX;
+    if ((ox === 'auto' || ox === 'scroll') && el.scrollWidth > el.clientWidth + 2) return true;
+  }
+  return false;
+}
+let swipe = null;
+document.addEventListener('touchstart', e => {
+  swipe = null;
+  if (e.touches.length !== 1 || state.editing || !cfg().tok || !$('drawer').hidden) return;
+  const t = e.touches[0];
+  if (t.clientX < 24 || t.clientX > window.innerWidth - 24) return;          // screen edges belong to the phone's back gesture
+  const field = e.target.closest('input, textarea, select, [contenteditable="true"]');
+  if ((field && (field === document.activeElement || field.type === 'range')) || e.target.closest('.no-swipe') || scrollsSideways(e.target)) return;   // only the field you're typing in keeps the swipe
+  swipe = { x: t.clientX, y: t.clientY, at: Date.now() };
+}, { passive: true });
+document.addEventListener('touchend', e => {
+  if (!swipe) return;
+  const t = e.changedTouches[0], dx = t.clientX - swipe.x, dy = t.clientY - swipe.y, dt = Date.now() - swipe.at;
+  swipe = null;
+  if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.7 || dt > 900) return;   // mostly sideways, quick, far enough
+  if (String(window.getSelection && window.getSelection()).length) return;         // selecting text, not swiping
+  const order = tabOrder(), cur = order.indexOf('#' + state.view), next = cur + (dx < 0 ? 1 : -1);
+  if (cur < 0 || next < 0 || next >= order.length) return;
+  state.swipeDir = dx < 0 ? 'left' : 'right';
+  location.hash = order[next];
+}, { passive: true });
+document.addEventListener('touchcancel', () => { swipe = null }, { passive: true });
 $('bmSave').onclick = saveBookmark;
 for (const id of ['bmUrl', 'bmNote']) $(id).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); saveBookmark() } });
 $('bmFile').addEventListener('change', e => { const f = e.target.files[0]; if (f) stageShot(f); e.target.value = '' });
