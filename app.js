@@ -28,7 +28,6 @@ const STATUSES = [['idea', 'Idea'], ['making', 'Making'], ['ready', 'Ready'], ['
 const STATUS_RANK = { making: 0, ready: 1, idea: 2, posted: 3 };
 const REF_TYPES = { 'image/png': ['image', 'png'], 'image/jpeg': ['image', 'jpg'], 'image/webp': ['image', 'webp'], 'image/gif': ['image', 'gif'], 'video/mp4': ['video', 'mp4'], 'video/webm': ['video', 'webm'], 'video/quicktime': ['video', 'mov'], 'application/pdf': ['pdf', 'pdf'] };
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-const VAAR = ['रविवार', 'सोमवार', 'मंगलवार', 'बुधवार', 'गुरुवार', 'शुक्रवार', 'शनिवार'];
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
 // ── Small helpers ───────────────────────────────────────────────────────
@@ -364,7 +363,7 @@ function upcomingAfter(from, span) {
 function render() {
   state.today = istToday();
   const t = state.today, end = addDays(state.start, 3);
-  $('todayLine').textContent = `${shortDate(state.start)} – ${shortDate(end)} ${end.slice(0, 4)} · Today is ${WEEKDAYS[jsDow(t)]}, ${longDate(t)} (${VAAR[jsDow(t)]}) · IST`;
+  $('todayLine').textContent = `${shortDate(state.start)} – ${shortDate(end)} ${end.slice(0, 4)} · Today is ${WEEKDAYS[jsDow(t)]}, ${longDate(t)} · IST`;
   $('todayBtn').setAttribute('aria-pressed', String(state.start === t));
   renderStats();
   $('days').replaceChildren(...[0, 1, 2, 3].map(i => dayCard(addDays(state.start, i))));
@@ -412,7 +411,7 @@ function dayCard(date) {
   const relBadge = rel === 0 ? h('span', { class: 'badge accent plain' }, 'Today') : rel === 1 ? h('span', { class: 'badge plain' }, 'Tomorrow') : null;
   return h('article', { class: `day${rel === 0 ? ' is-today' : ''}`, 'aria-label': `${WEEKDAYS[jsDow(date)]} ${longDate(date)}` },
     h('div', { class: 'day-head' },
-      h('div', null, h('div', { class: 'day-name' }, `${WEEKDAYS[jsDow(date)]}, ${shortDate(date)}`), h('div', { class: 'day-sub' }, VAAR[jsDow(date)])),
+      h('div', null, h('div', { class: 'day-name' }, `${WEEKDAYS[jsDow(date)]}, ${shortDate(date)}`), rel > 1 || rel < 0 ? h('div', { class: 'day-sub' }, relLabel(rel)) : null),
       relBadge),
     h('div', { class: 'day-body' },
       obsSec,
