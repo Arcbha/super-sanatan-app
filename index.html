@@ -80,6 +80,11 @@ h1 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -.015em; }
 .banner.ok { background: var(--green-soft); box-shadow: none; }
 .card { background: var(--surf); border-radius: 22px; box-shadow: var(--shadow); }
 .quiet { color: var(--sub); font-size: 13.5px; }
+.diag { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-weight: 400; }
+.diag li { display: flex; gap: 8px; align-items: flex-start; color: var(--ink); font-size: 14px; }
+.diag li.ok > span:first-child { color: var(--green); font-weight: 700; }
+.diag li.bad > span:first-child { color: var(--red); font-weight: 700; }
+.msg .btn { margin-top: 10px; }
 .sec-label, .stat-label, .eyebrow { font-size: 11.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--sub); }
 
 /* Buttons */
@@ -307,7 +312,7 @@ form.plan-form { display: flex; flex-direction: column; min-height: 0; flex: 1; 
       <div>
         <h2 id="setupTitle">Connect your content repo</h2>
         <p class="quiet" style="margin:4px 0 0">Plans and reference art are saved to the Content-distribution repo on GitHub. Paste a token once; it stays in this browser only.</p>
-        <p class="quiet" style="margin:6px 0 0"><b>Already set up on another device?</b> Each phone or browser asks once. Make another token the same way (you can have several), or paste the one you saved.</p>
+        <p class="quiet" style="margin:6px 0 0"><b>Already set up on another device?</b> Each phone or browser asks once. Use a token made for <b>Content-distribution</b> (you can have several, or paste the one you saved for this app). A token made for another repo, like Rupee Mechanics’, won’t work.</p>
       </div>
       <ol>
         <li>On github.com, open Settings → Developer settings → Personal access tokens → <b>Fine-grained tokens</b> → Generate new token.</li>

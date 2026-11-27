@@ -84,6 +84,13 @@ function icon(d) {
 }
 const SPARK = 'M8 1.5 9.4 6.6 14.5 8 9.4 9.4 8 14.5 6.6 9.4 1.5 8 6.6 6.6Z';
 function msg(id, kind, text) { const m = $(id); m.className = 'msg' + (id === 'appMsg' ? ' banner' : '') + (kind ? ' ' + kind : ''); m.textContent = text || ''; m.hidden = !text }
+// A message with a checklist (✓ / ✗ lines) and an optional button, for connection problems.
+function msgList(id, kind, title, lines, action) {
+  const m = $(id); m.className = 'msg' + (id === 'appMsg' ? ' banner' : '') + (kind ? ' ' + kind : ''); m.hidden = false;
+  m.replaceChildren(h('div', { style: 'font-weight:600' }, title),
+    h('ul', { class: 'diag' }, lines.map(l => h('li', { class: l.ok ? 'ok' : 'bad' }, h('span', { 'aria-hidden': 'true' }, l.ok ? '✓' : '✗'), h('span', null, l.text)))),
+    action ? h('button', { type: 'button', class: 'btn sm', onclick: action.run }, action.label) : null);
+}
 // Tap twice to confirm: confirm() pop-ups are blocked in some in-app browsers.
 function armTap(btn, label) {
   if (btn.dataset.armed === '1') { clearTimeout(btn._t); return true }
@@ -245,6 +252,38 @@ function aiState(p) {
   return { kind: 'none' };
 }
 
+// Step-by-step check of the connection. Each line says what worked or what to change.
+async function probe(path, tok) {
+  try {
+    const r = await fetch(API + path, { headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', Authorization: 'Bearer ' + tok } });
+    let json = null; try { json = await r.json() } catch {}
+    return { status: r.status, json };
+  } catch { return { status: 0 } }
+}
+async function diagnose(tok, repo, branch) {
+  const lines = [];
+  const user = await probe('/user', tok);
+  if (user.status === 0) return [{ ok: false, text: 'Can’t reach GitHub from this phone. Check the internet connection (or turn off a VPN / data saver) and try again.' }];
+  if (user.status === 401) return [{ ok: false, text: 'GitHub doesn’t accept this token: it is mistyped, expired or revoked. Make a new fine-grained token and paste it again. Paste it in one go; a line break or space inside the token breaks it.' }];
+  if (user.status !== 200) return [{ ok: false, text: `GitHub answered ${user.status} when checking the token (${(user.json && user.json.message) || 'no details'}).` }];
+  lines.push({ ok: true, text: `Token accepted by GitHub${user.json && user.json.login ? ' (@' + user.json.login + ')' : ''}.` });
+  const r = await probe(`/repos/${repo}`, tok);
+  if (r.status === 404) { lines.push({ ok: false, text: `This token can’t see ${repo}. GitHub → Settings → Developer settings → Fine-grained tokens → your token → Repository access: choose “Only select repositories” and tick Content-distribution (or “All repositories”). A token made for another repo, like Rupee Mechanics’, won’t work here.` }); return lines }
+  if (r.status !== 200) { lines.push({ ok: false, text: `GitHub answered ${r.status} for ${repo} (${(r.json && r.json.message) || 'no details'}).` }); return lines }
+  lines.push({ ok: true, text: `${repo} found.` });
+  if (!r.json.permissions || !r.json.permissions.push) { lines.push({ ok: false, text: 'The token can read the repo but not write to it. In the token’s settings, Permissions → Repository permissions → Contents: set to “Read and write”, then Update.' }); return lines }
+  lines.push({ ok: true, text: 'The token can write to the repo.' });
+  const b = await probe(`/repos/${repo}/git/ref/heads/${encodeURIComponent(branch)}`, tok);
+  if (b.status !== 200) { lines.push({ ok: false, text: `The branch “${branch}” wasn’t found (GitHub answered ${b.status}). It should be main.` }); return lines }
+  lines.push({ ok: true, text: `Branch ${branch} found.` });
+  return lines;
+}
+function storageWorks() {
+  try { localStorage.setItem('ss.probe', '1'); const ok = localStorage.getItem('ss.probe') === '1'; localStorage.removeItem('ss.probe'); return ok } catch { return false }
+}
+const STORAGE_MSG = 'This browser won’t keep the token (a private or incognito window, an in-app browser such as WhatsApp or Instagram, or blocked site data), so the app would ask for it every time. Open https://arcbha.github.io/super-sanatan-app/ in a normal Chrome or Samsung Internet tab, connect there, then use Add to Home screen from that same browser.';
+function reconnect() { store.del(K.tok); state.plans = []; state.loaded = false; closeEditor(); location.hash = ''; boot() }
+
 async function loadAll(first) {
   msg('appMsg', '', first ? 'Loading from GitHub…' : '');
   try {
@@ -261,7 +300,11 @@ async function loadAll(first) {
     state.loaded = true;
     msg('appMsg', '', state.notice); state.notice = '';
   } catch (e) {
-    msg('appMsg', 'err', e.message);
+    if ([401, 403, 404].includes(e.status)) {
+      msg('appMsg', 'err', 'Checking the connection…');
+      const c = cfg();
+      msgList('appMsg', 'err', 'The app couldn’t open your content repo.', await diagnose(c.tok, c.repo, c.branch), { label: 'Reconnect with a new token', run: reconnect });
+    } else msg('appMsg', 'err', e.message);
   }
   if (!state.editing) render();
   if (state.view === 'bookmarks') renderBookmarks();
@@ -916,7 +959,7 @@ function boot() {
   applyView();
   $('repoLbl').textContent = on ? `${c.repo} · ${c.branch}` : '';
   render();
-  if (!on) { $('who').textContent = ''; return }
+  if (!on) { $('who').textContent = ''; if (!storageWorks()) msg('setupMsg', 'err', STORAGE_MSG); return }
   api('/user').then(u => $('who').textContent = '@' + u.login).catch(() => {});
   loadAll(true);
 }
@@ -926,12 +969,17 @@ $('connect').onclick = async () => {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return msg('setupMsg', 'err', 'Repository should look like Arcbha/Content-distribution.');
   msg('setupMsg', '', 'Checking the token…');
   store.set(K.tok, tok); store.set(K.repo, repo); store.set(K.branch, branch);
+  if (store.get(K.tok) !== tok) return msg('setupMsg', 'err', STORAGE_MSG);
   try {
     const r = await api(`/repos/${repo}`);
     if (!r.permissions || !r.permissions.push) throw new GhError(403);
     await api(`/repos/${repo}/git/ref/heads/${encodeURIComponent(branch)}`);
     $('tok').value = ''; msg('setupMsg', '', ''); boot();
-  } catch (e) { store.del(K.tok); msg('setupMsg', 'err', e.message) }
+  } catch (e) {
+    store.del(K.tok);
+    msg('setupMsg', '', 'Checking what went wrong…');
+    msgList('setupMsg', 'err', 'Couldn’t connect.', await diagnose(tok, repo, branch));
+  }
 };
 $('forgetBtn').onclick = e => { if (!armTap(e.currentTarget, 'Tap again to forget')) return; store.del(K.tok); state.plans = []; state.loaded = false; closeEditor(); boot() };
 $('refreshBtn').onclick = () => { if (!state.editing && !state.saving) loadAll() };
