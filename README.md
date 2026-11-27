@@ -15,6 +15,8 @@ The content planner for Super Sanatan: a 4-day calendar in IST with panchang obs
 
 ## Using it
 
+- **Swipe left / right** anywhere on a page to move between Calendar, Create, Artwork, Bookmarks and Quotes (not while typing in a field or with a plan open; the screen edges stay with the phone's back gesture).
+
 - **+ Add plan** on any day opens the side panel: title, type, deity, status, date, platforms, notes, references and Midjourney.
 - **References:** upload, drop or paste images (resized to 2000 px), MP4/MOV/WebM or PDF, and add written references. Files upload to the repo when you save.
 - **Status badge** on a plan moves it Idea → Making → Ready → Posted.
@@ -56,4 +58,3 @@ Quote-based inspiration you want to keep (top bar → **Quotes**, or `#quotes`):
 ## Claude accounts
 
 Write with Claude and Create run on two Claude accounts, in order: **Account Google** first, then **Account Outlook**. If one is rate-limited, out of usage or can't sign in, the job switches to the other straight away, and a limited account waits at the back until its limit resets. The **Claude accounts** card on Create shows each account as Ready, Limited (and when it's back), Sign-in problem or Not set up; finished prompts show which account wrote them. Set up in Content-distribution: `tasks/claude_accounts.py`, secrets `CLAUDE_CODE_OAUTH_TOKEN` (Google) and `ANTHROPIC_API_KEY_2` (Outlook).
-

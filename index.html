@@ -39,6 +39,12 @@ body {
 }
 body.locked { overflow: hidden; }
 .hide, [hidden] { display: none !important; }
+body { touch-action: pan-y pinch-zoom; }
+@keyframes swipe-from-right { from { transform: translateX(36px); opacity: .35; } to { transform: none; opacity: 1; } }
+@keyframes swipe-from-left { from { transform: translateX(-36px); opacity: .35; } to { transform: none; opacity: 1; } }
+.swipe-left { animation: swipe-from-right .22s ease-out; }
+.swipe-right { animation: swipe-from-left .22s ease-out; }
+@media (prefers-reduced-motion: reduce) { .swipe-left, .swipe-right { animation: none; } }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
